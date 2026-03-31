@@ -1,0 +1,84 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+# ─── Virtual Environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.env
+ENV/
+env.bak/
+venv.bak/
+
+# ─── Environment / Secrets ────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+
+# ─── Testing / Coverage ───────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+nosetests.xml
+pytest.ini
+test-results/
+
+# ─── IDE / Editor ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# ─── Docker ───────────────────────────────────────────────────────────────────
+# (keep Dockerfile tracked; ignore local build artifacts)
+docker-compose.override.yml
+
+# ─── Project-specific ─────────────────────────────────────────────────────────
+# Output files from inference runs
+baseline_results.json
+results/
+logs/
+
+# Any zip archives created for submission
+*.zip
+*.tar.gz
+
+# Runtime output directories (keep .gitkeep placeholders)
+outputs/logs/*
+outputs/evals/*
+!outputs/logs/.gitkeep
+!outputs/evals/.gitkeep
+
+# Stray directories from shell glob expansions
+{server,models,tasks,graders,tests}/

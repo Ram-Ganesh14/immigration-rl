@@ -1,0 +1,89 @@
+name: airport-immigration-processing-env
+version: "1.0.0"
+description: >
+  AI agent environment simulating an airport immigration officer processing
+  departing passengers. The agent must verify documents, detect anomalies,
+  check watchlists, evaluate biometric data, and make clear/hold/deny/escalate
+  decisions under time pressure with a queue of passengers.
+author: Ram Ganesh E
+tags:
+  - openenv
+  - real-world
+  - immigration
+  - airport
+  - document-verification
+  - queue-management
+  - decision-making
+  - rl-environment
+
+observation_space:
+  type: structured
+  description: >
+    Passenger profile including documents, travel history, biometrics,
+    watchlist match, auto-detected flags, queue status, and time remaining.
+
+action_space:
+  type: discrete
+  actions:
+    - clear: Approve passenger to proceed
+    - hold: Send to secondary screening
+    - deny: Deny boarding
+    - escalate: Escalate to senior officer
+    - request_document: Ask passenger for additional document
+
+reward:
+  type: shaped
+  range: [-3.0, 1.5]
+  description: >
+    Per-decision reward based on correctness, speed, escalation quality,
+    and consistency (fairness). Partial credit for correct process steps.
+
+tasks:
+  - id: task1_document_check
+    name: Basic document verification
+    difficulty: easy
+    queue_size: 3
+    max_steps: 30
+    time_limit_seconds: 300
+    description: Small queue with clear-cut cases. Expired passports, clean passengers.
+
+  - id: task2_flag_detection
+    name: Red flag detection
+    difficulty: medium
+    queue_size: 6
+    max_steps: 60
+    time_limit_seconds: 600
+    description: Mixed queue with hidden anomalies. Visa mismatches, overstay history, name mismatches.
+
+  - id: task3_queue_pressure
+    name: High-pressure queue management
+    difficulty: hard
+    queue_size: 15
+    max_steps: 150
+    time_limit_seconds: 900
+    description: Large queue with time pressure. Edge cases including emergency travel docs and biometric fraud.
+
+  - id: task4_adversarial
+    name: Adversarial edge cases
+    difficulty: hard
+    queue_size: 8
+    max_steps: 100
+    time_limit_seconds: 600
+    description: Expert mode. Forged documents, unaccompanied minors, watchlist partial matches. Tests consistency and fairness.
+
+endpoints:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+  grade: POST /grade
+  tasks: GET /tasks
+  health: GET /health
+
+docker:
+  port: 7860
+  base_image: python:3.11-slim
+
+huggingface:
+  space_type: docker
+  sdk: docker
+  port: 7860

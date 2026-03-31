@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "airport-immigration-env"
+version = "1.0.0"
+description = "OpenEnv environment simulating airport immigration officer decisions for AI agent training"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Ram Ganesh E", email = "ramganeshelanselvam@gmail.com" }
+]
+keywords = ["openenv", "rl", "immigration", "airport", "reinforcement-learning", "ai-agent"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.6",
+    "pydantic>=2.8.2",
+    "requests>=2.32.0",
+    "pyyaml>=6.0.2",
+]
+
+[project.optional-dependencies]
+inference = ["openai>=1.40.0"]
+test = ["pytest>=8.0.0", "httpx>=0.27.0", "python-multipart>=0.0.9"]
+async = ["httpx>=0.27.0"]
+all = [
+    "openai>=1.40.0",
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.urls]
+Homepage = "https://github.com/Ram-Ganesh14/immigration-rl"
+Repository = "https://github.com/Ram-Ganesh14/immigration-rl"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["models*", "server*", "graders*", "tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
