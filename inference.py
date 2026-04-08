@@ -1,148 +1,136 @@
 #!/usr/bin/env python3
 """
-inference.py — Baseline inference script for Airport Immigration Processing Environment.
+inference.py — Baseline inference script.
+Uses the OpenAI client against all 4 tasks.
 
-Uses the OpenAI client to run an LLM agent against all tasks.
-Reads credentials from environment variables:
-  API_BASE_URL  — LLM API endpoint
-  MODEL_NAME    — Model identifier
-  HF_TOKEN      — Hugging Face / API key
-
-Usage:
-  python inference.py
-  python inference.py --task task1_document_check
-  python inference.py --task all --seed 42
-
-Runtime: < 20 minutes on vcpu=2, memory=8GB
+Environment variables:
+  API_BASE_URL   LLM API endpoint
+  MODEL_NAME     Model identifier
+  HF_TOKEN       API key
+  ENV_URL        Environment URL (default: http://localhost:7860)
 """
 
-import os
-import sys
-import json
-import time
-import argparse
-import requests
+import os, sys, json, time, argparse, requests
 from openai import OpenAI
 
-# ─── Config ──────────────────────────────────────────────────────────────────
-
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o-mini")
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME   = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 HF_TOKEN     = os.environ.get("HF_TOKEN", "")
 ENV_URL      = os.environ.get("ENV_URL", "http://localhost:7860")
 
-TASKS = [
-    "task1_document_check",
-    "task2_flag_detection",
-    "task3_queue_pressure",
-]
-
-MAX_STEPS_PER_TASK = 80
+TASKS = ["task1_document_check", "task2_flag_detection",
+         "task3_queue_pressure", "task4_adversarial"]
+MAX_STEPS_PER_TASK = 120
 SEED = 42
 
-# ─── OpenAI client ───────────────────────────────────────────────────────────
+client = OpenAI(api_key=HF_TOKEN or "sk-placeholder", base_url=API_BASE_URL)
 
-client = OpenAI(
-    api_key=HF_TOKEN or "sk-placeholder",
-    base_url=API_BASE_URL,
-)
+SYSTEM_PROMPT = """You are an AI airport immigration officer processing departing passengers.
 
-# ─── System prompt ────────────────────────────────────────────────────────────
+=== AVAILABLE ACTIONS ===
+Terminal decisions (advance to next passenger):
+  clear     — All good, approve.
+  hold      — Suspicious but not certain — secondary screening.
+  deny      — Clear violation (expired doc, visa mismatch, etc).
+  escalate  — Serious concern (watchlist, biometric fraud, unaccompanied minor, forged doc).
 
-SYSTEM_PROMPT = """You are an AI airport immigration officer. Your job is to process passengers efficiently and accurately.
+Information-gathering actions (do NOT advance queue, cost a little time):
+  query_interpol    — Query the INTERPOL/national watchlist database for this passenger.
+  verify_biometrics — Run biometric verification (face match score, fingerprint, document authenticity).
+  request_document  — Ask passenger to present a specific document.
 
-For each passenger you receive, you must make ONE of these decisions:
-- clear: Passenger is approved to proceed. All documents valid, no concerns.
-- hold: Passenger needs secondary screening. Something is suspicious but not definitive.
-- deny: Passenger must be denied boarding. Clear violation (expired docs, visa mismatch, etc.)
-- escalate: Passenger must be escalated to a senior officer. Watchlist match, biometric failure, unaccompanied minor, document forgery suspected.
-- request_document: Ask for additional document before deciding (use sparingly, max 2 times per passenger).
+=== WHEN TO USE API ACTIONS ===
+Call query_interpol when you see: "INTERPOL_QUERY_RECOMMENDED" flag, or the passenger name feels familiar/suspicious.
+Call verify_biometrics when you see: "BIOMETRIC_SCAN_RECOMMENDED", "DOCUMENT_INSPECTION_RECOMMENDED" flags, or anything seems off.
+You have a budget of 4 API calls per passenger. Use them wisely — they cost time.
 
-Rules:
-1. EXPIRED passport → deny
-2. WATCHLIST match (match_score > 0.80) → escalate
-3. BIOMETRIC face match < 0.70 → escalate
-4. VISA type doesn't match travel purpose → deny
-5. Name mismatch between documents → hold
-6. Overstay history → hold
-7. Unaccompanied minor → escalate
-8. Emergency travel doc + expired passport → clear (ETD overrides)
-9. Forged document suspected → escalate
+=== DECISION RULES ===
+1. Expired passport → deny (unless emergency travel doc present → clear)
+2. Watchlist match score > 0.80 (from query_interpol) → escalate
+3. Face match score < 0.70 OR fingerprint fail (from verify_biometrics) → escalate
+4. Document not authentic (from verify_biometrics) → escalate
+5. Visa type ≠ travel purpose → deny
+6. Name mismatch between docs → hold
+7. Overstay history → hold
+8. Unaccompanied minor → escalate
+9. Clean profile, no flags → clear
 
-You MUST respond in this exact JSON format only:
+=== FAIRNESS NOTE ===
+Your decisions are monitored for demographic bias. Do NOT factor nationality or gender into your
+decision — base every decision strictly on documents, biometrics, and flags.
+
+=== OUTPUT FORMAT ===
+Respond ONLY with valid JSON, no markdown:
 {
-  "action_type": "clear|hold|deny|escalate|request_document",
-  "passenger_id": "<passenger_id from observation>",
-  "reason": "<brief explanation max 20 words>",
-  "document_requested": "<doc name if action_type is request_document, else null>"
+  "action_type": "clear|hold|deny|escalate|query_interpol|verify_biometrics|request_document",
+  "passenger_id": "<id>",
+  "reason": "<max 20 words>",
+  "document_requested": null
 }"""
 
 
-# ─── LLM call ────────────────────────────────────────────────────────────────
-
-def call_llm(observation: dict) -> dict:
-    """Send observation to LLM, parse JSON action."""
-    passenger = observation.get("current_passenger")
+def call_llm(obs: dict) -> dict:
+    passenger = obs.get("current_passenger")
     if not passenger:
         return None
 
-    # Build a clean prompt from the observation
-    flags = observation.get("auto_flags", [])
-    docs = []
-    for d in passenger.get("documents", []):
-        doc_info = (
-            f"  - {d['doc_type']}: {d['doc_number']} | "
-            f"Name: {d['name_on_doc']} | "
-            f"Expiry: {d.get('expiry_date', 'N/A')} | "
-            f"Visa type: {d.get('visa_type', 'N/A')}"
-        )
-        docs.append(doc_info)
+    docs = "\n".join(
+        f"  - {d['doc_type']}: {d['doc_number']} | Name: {d['name_on_doc']} | "
+        f"Expiry: {d.get('expiry_date','N/A')} | Visa: {d.get('visa_type','N/A')} | "
+        f"Anomaly: {d.get('anomaly','none')}"
+        for d in passenger.get("documents", [])
+    )
+    history = "\n".join(
+        f"  - {h['country']} ({h['entry_date']}→{h.get('exit_date','?')}) "
+        f"{'✓' if h.get('visa_compliant') else '✗ NON-COMPLIANT'}"
+        for h in passenger.get("travel_history", [])
+    ) or "  None"
 
-    history = passenger.get("travel_history", [])
-    history_str = ""
-    for h in history:
-        compliance = "✓" if h.get("visa_compliant") else "✗ NON-COMPLIANT"
-        history_str += f"  - {h['country']} ({h['entry_date']} → {h.get('exit_date', 'N/A')}) {compliance}\n"
+    bio_result = passenger.get("queried_biometrics")
+    wl_result  = passenger.get("queried_watchlist")
+    bio_str = (
+        f"  Face match: {bio_result['face_match_score']:.2f} | "
+        f"Fingerprint: {'OK' if bio_result['fingerprint_match'] else 'FAIL'} | "
+        f"Authentic: {'YES' if bio_result['document_authentic'] else 'NO — FORGERY'}"
+        if bio_result else "  NOT QUERIED YET"
+    )
+    wl_str = (
+        f"  Matched: {wl_result['matched']} | "
+        f"Score: {wl_result['match_score']:.2f} | "
+        f"Reason: {wl_result.get('match_reason','N/A')}"
+        if wl_result else "  NOT QUERIED YET"
+    )
 
-    bio = passenger.get("biometrics", {})
-    wl = passenger.get("watchlist_match", {})
-    special = passenger.get("special_circumstances", [])
-
-    prompt = f"""CURRENT PASSENGER:
+    prompt = f"""PASSENGER TO PROCESS:
 ID: {passenger['passenger_id']}
 Name: {passenger['name']}
-Nationality: {passenger['nationality']}
+Nationality: {passenger['nationality']} | Gender: {passenger['gender']}
 DOB: {passenger['date_of_birth']}
-Destination: {passenger['destination']}
+Destination: {passenger['destination']} | Flight: {passenger['flight_number']}
 Travel purpose: {passenger['travel_purpose']}
-Flight: {passenger['flight_number']}
+Special: {', '.join(passenger.get('special_circumstances', [])) or 'None'}
 
 DOCUMENTS:
-{chr(10).join(docs)}
-
-BIOMETRICS:
-  Face match score: {bio.get('face_match_score', 'N/A')}
-  Fingerprint match: {bio.get('fingerprint_match', 'N/A')}
-
-WATCHLIST:
-  Matched: {wl.get('matched', False)}
-  Match score: {wl.get('match_score', 0.0)}
-  Reason: {wl.get('match_reason', 'N/A')}
+{docs}
 
 TRAVEL HISTORY:
-{history_str if history_str else '  No prior travel history.'}
+{history}
 
-SPECIAL CIRCUMSTANCES: {', '.join(special) if special else 'None'}
-AUTO-DETECTED FLAGS: {', '.join(flags) if flags else 'None'}
+BIOMETRIC CHECK RESULT:
+{bio_str}
 
-QUEUE: {observation.get('queue_length', 0)} passengers waiting.
-TIME REMAINING: {observation.get('time_remaining', 0)} seconds.
-LAST ACTION RESULT: {observation.get('processing_result', '')}
+INTERPOL/WATCHLIST RESULT:
+{wl_str}
 
-What is your decision?"""
+SYSTEM FLAGS: {', '.join(obs.get('auto_flags', [])) or 'None'}
+API calls used: {obs.get('api_calls_used', [])} | Remaining budget: {obs.get('api_calls_remaining', 4)}
+Queue: {obs.get('queue_length', 0)} remaining | Time left: {obs.get('time_remaining', 0)}s
+Last result: {obs.get('processing_result', '')}
+
+What is your action?"""
 
     try:
-        response = client.chat.completions.create(
+        resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -151,160 +139,130 @@ What is your decision?"""
             temperature=0.1,
             max_tokens=200,
         )
-        raw = response.choices[0].message.content.strip()
-        # Strip markdown fences if present
+        raw = resp.choices[0].message.content.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
         return json.loads(raw.strip())
-    except json.JSONDecodeError as e:
-        print(f"    [WARN] LLM returned invalid JSON: {e}. Defaulting to hold.")
-        return {
-            "action_type": "hold",
-            "passenger_id": passenger["passenger_id"],
-            "reason": "Unable to parse response, defaulting to hold.",
-            "document_requested": None
-        }
+    except json.JSONDecodeError:
+        return {"action_type": "hold", "passenger_id": passenger["passenger_id"],
+                "reason": "Parse error — defaulting to hold.", "document_requested": None}
     except Exception as e:
-        print(f"    [ERROR] LLM call failed: {e}")
+        print(f"    [ERROR] LLM call: {e}")
         return None
 
 
-# ─── Environment interaction ──────────────────────────────────────────────────
-
-def env_request(method: str, endpoint: str, payload: dict = None) -> dict:
+def env_req(method: str, endpoint: str, payload: dict = None) -> dict:
     url = f"{ENV_URL}{endpoint}"
     try:
-        if method == "GET":
-            r = requests.get(url, timeout=30)
-        else:
-            r = requests.post(url, json=payload, timeout=30)
+        r = requests.get(url, timeout=30) if method == "GET" else \
+            requests.post(url, json=payload or {}, timeout=30)
         r.raise_for_status()
         return r.json()
     except requests.RequestException as e:
-        print(f"[ERROR] Environment request failed: {e}")
+        print(f"[ERROR] {e}")
         sys.exit(1)
 
 
 def run_task(task_id: str, seed: int = SEED) -> dict:
-    print(f"\n{'='*60}")
-    print(f"  Task: {task_id}")
-    print(f"  Seed: {seed} | Model: {MODEL_NAME}")
-    print(f"{'='*60}")
+    print(f"\n{'='*60}\n  Task: {task_id} | Seed: {seed} | Model: {MODEL_NAME}\n{'='*60}")
 
-    # Reset
-    result = env_request("POST", "/reset", {"task_id": task_id, "seed": seed})
+    result = env_req("POST", "/reset", {"task_id": task_id, "seed": seed})
     obs = result["observation"]
-    episode_id = result["episode_id"]
-    print(f"  Episode: {episode_id}")
-    print(f"  Passengers: {obs.get('queue_length', 0) + (1 if obs.get('current_passenger') else 0)}")
+    print(f"  Episode: {result['episode_id']} | Passengers: "
+          f"{obs.get('queue_length', 0) + (1 if obs.get('current_passenger') else 0)}")
 
-    step = 0
-    done = False
-    cumulative_reward = 0.0
+    print(f"[START] task={task_id} env=airport-immigration model={MODEL_NAME}", flush=True)
+    step, done, cum_reward = 0, False, 0.0
+    all_rewards = []
 
     while not done and step < MAX_STEPS_PER_TASK:
         if not obs.get("current_passenger"):
-            print("  No more passengers. Episode complete.")
+            print("  Queue complete.")
             break
 
-        passenger = obs["current_passenger"]
-        print(f"\n  Step {step+1} | Passenger: {passenger['name']} ({passenger['nationality']})")
-        print(f"    Flags: {obs.get('auto_flags', [])}")
-        print(f"    Purpose: {passenger['travel_purpose']} → {passenger['destination']}")
+        p = obs["current_passenger"]
+        flags = obs.get("auto_flags", [])
+        api_used = obs.get("api_calls_used", [])
 
-        # Get LLM decision
-        action_json = call_llm(obs)
-        if action_json is None:
-            print("    [ERROR] LLM failed. Skipping.")
+        print(f"\n  Step {step+1} | {p['name']} ({p['nationality']}) | Flags: {flags}")
+        if api_used:
+            print(f"    APIs called: {api_used}")
+
+        action = call_llm(obs)
+        if action is None:
             break
 
-        print(f"    Decision: {action_json['action_type'].upper()} | {action_json['reason']}")
-
-        # Send action to environment
-        step_result = env_request("POST", "/step", {"action": action_json})
+        print(f"    → {action['action_type'].upper()} | {action['reason']}")
+        
+        step_result = env_req("POST", "/step", {"action": action})
         obs = step_result["observation"]
-        reward = step_result["reward"]
+        reward_dict = step_result["reward"]
+        reward_val = reward_dict["total"]
         done = step_result["done"]
-
-        cumulative_reward += reward["total"]
-        print(f"    Reward: {reward['total']:+.3f} | {reward['explanation']}")
-        print(f"    Cumulative: {cumulative_reward:+.3f}")
-
+        cum_reward += reward_val
+        all_rewards.append(reward_val)
+        
+        print(f"[STEP] step={step+1} action={json.dumps(action)} reward={reward_val:.2f} done={str(done).lower()} error=null", flush=True)
+        print(f"    Reward: {reward_val:+.3f} | {reward_dict['explanation'][:70]}")
         step += 1
-        time.sleep(0.3)  # small delay to avoid rate limits
+        time.sleep(0.25)
 
-    # Grade the episode
-    grade_result = env_request("POST", "/grade", {})
-
-    print(f"\n  ── Final Grade ──────────────────────────────────")
-    print(f"  Score:    {grade_result['score']:.4f} / 1.0000")
-    print(f"  Details:  {grade_result.get('explanation', '')}")
-    print(f"  Steps:    {step} | Cumulative reward: {cumulative_reward:+.3f}")
+    grade = env_req("POST", "/grade", {})
+    score_val = grade['score']
+    success_val = str(score_val >= 0.5).lower()
+    rewards_str = ",".join(f"{r:.2f}" for r in all_rewards)
+    print(f"[END] success={success_val} steps={step} score={score_val:.3f} rewards={rewards_str}", flush=True)
+    
+    print(f"\n  ── Grade ────────────────────────────────────────────")
+    print(f"  Score: {score_val:.4f}/1.0000")
+    print(f"  {grade.get('explanation', '')}")
+    if "bias_analysis" in grade:
+        ba = grade["bias_analysis"]
+        print(f"  Bias: {ba.get('explanation','')}")
 
     return {
         "task_id": task_id,
-        "score": grade_result["score"],
-        "details": grade_result,
+        "score": grade["score"],
+        "details": grade,
         "steps": step,
-        "cumulative_reward": round(cumulative_reward, 3),
+        "cumulative_reward": round(cum_reward, 3),
     }
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
-
 def main():
-    parser = argparse.ArgumentParser(description="Airport Immigration Env — Baseline Inference")
-    parser.add_argument("--task", default="all", help="Task ID or 'all'")
+    global ENV_URL
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task", default="all")
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--env-url", default=ENV_URL)
     args = parser.parse_args()
 
-    global ENV_URL
     ENV_URL = args.env_url
 
-    # Health check
-    health = env_request("GET", "/health")
-    print(f"Environment: {health['environment']} v{health['version']} — {health['status']}")
+    h = env_req("GET", "/health")
+    print(f"Env: {h['environment']} v{h['version']} — {h['status']}")
 
     tasks_to_run = TASKS if args.task == "all" else [args.task]
-    results = []
+    results, start = [], time.time()
 
-    start = time.time()
-    for task_id in tasks_to_run:
-        result = run_task(task_id, seed=args.seed)
-        results.append(result)
+    for tid in tasks_to_run:
+        results.append(run_task(tid, seed=args.seed))
 
     elapsed = time.time() - start
-
-    # Summary
-    print(f"\n{'='*60}")
-    print("  BASELINE RESULTS SUMMARY")
-    print(f"{'='*60}")
-    print(f"  Model:   {MODEL_NAME}")
-    print(f"  Seed:    {args.seed}")
-    print(f"  Runtime: {elapsed:.1f}s\n")
-
+    print(f"\n{'='*60}\n  RESULTS | Model: {MODEL_NAME} | Seed: {args.seed} | {elapsed:.1f}s\n{'='*60}")
     for r in results:
         bar = "█" * int(r["score"] * 20) + "░" * (20 - int(r["score"] * 20))
         print(f"  {r['task_id']:<30} [{bar}] {r['score']:.4f}")
+    avg = sum(r["score"] for r in results) / len(results) if results else 0
+    print(f"\n  Average: {avg:.4f}\n{'='*60}\n")
 
-    avg = sum(r["score"] for r in results) / len(results) if results else 0.0
-    print(f"\n  Average score: {avg:.4f}")
-    print(f"{'='*60}\n")
-
-    # Save results
-    output = {
-        "model": MODEL_NAME,
-        "seed": args.seed,
-        "runtime_seconds": round(elapsed, 1),
-        "results": results,
-        "average_score": round(avg, 4),
-    }
     with open("baseline_results.json", "w") as f:
-        json.dump(output, f, indent=2)
-    print("  Results saved to baseline_results.json")
+        json.dump({"model": MODEL_NAME, "seed": args.seed,
+                   "runtime_seconds": round(elapsed, 1),
+                   "results": results, "average_score": round(avg, 4)}, f, indent=2)
+    print("  Saved → baseline_results.json")
 
 
 if __name__ == "__main__":

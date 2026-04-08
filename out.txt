@@ -1,0 +1,4 @@
+  File "C:\Users\DELL\Downloads\airport-immigration-env-v2\imm-env-v2\inference.py", line 233
+    global ENV_URL
+    ^^^^^^^^^^^^^^
+SyntaxError: name 'ENV_URL' is used prior to global declaration

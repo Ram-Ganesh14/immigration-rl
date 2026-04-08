@@ -1,255 +1,284 @@
 """
-Agent graders for all tasks.
-Each grader takes the episode decision_log and returns a score 0.0–1.0.
-Deterministic and reproducible.
+Graders for all 4 tasks.
+Each returns a score in [0.0, 1.0] with a detailed breakdown.
+
+Feature 3: Task 4 grader includes demographic bias penalty.
 """
 
 from typing import List, Dict, Any
+from collections import defaultdict
 
 
-def _base_accuracy(decision_log: List[Dict[str, Any]]) -> float:
-    """Simple decision accuracy across all processed passengers."""
-    if not decision_log:
+# ─── Shared helpers ───────────────────────────────────────────────────────────
+
+def _accuracy(log: List[Dict]) -> float:
+    if not log:
         return 0.0
-    correct = sum(1 for d in decision_log if d.get("correct", False))
-    return correct / len(decision_log)
+    return sum(1 for d in log if d.get("correct")) / len(log)
 
 
-def _weighted_accuracy(decision_log: List[Dict[str, Any]]) -> float:
-    """
-    Weighted accuracy — wrong clear of dangerous passenger penalised more
-    than wrong deny of innocent one. Reflects real-world priorities.
-    """
-    if not decision_log:
+def _weighted_accuracy(log: List[Dict]) -> float:
+    """Weights dangerous cases (escalate/deny) more heavily than clear."""
+    if not log:
         return 0.0
-
-    total_weight = 0
-    earned = 0.0
-
-    for d in decision_log:
+    total_w, earned = 0.0, 0.0
+    for d in log:
         gt = d.get("ground_truth", "")
-        act = d.get("action", "")
-        correct = d.get("correct", False)
+        w = 2.0 if gt in ["escalate", "deny"] else (1.5 if gt == "hold" else 1.0)
+        total_w += w
+        if d.get("correct"):
+            earned += w
+        elif d.get("action") == "clear" and gt in ["deny", "escalate"]:
+            earned -= w * 0.5   # extra penalty for missing real threats
+    return max(0.0, min(1.0, earned / total_w if total_w > 0 else 0.0))
 
-        # Weight by ground truth severity
-        if gt in ["escalate", "deny"]:
-            weight = 2.0
-        elif gt == "hold":
-            weight = 1.5
-        else:
-            weight = 1.0
 
-        total_weight += weight
-        if correct:
-            earned += weight
-        elif act == "clear" and gt in ["deny", "escalate"]:
-            earned -= weight * 0.5  # extra penalty for missing dangerous cases
+def _flag_recall(log: List[Dict]) -> float:
+    """Proportion of truly flagged passengers correctly actioned."""
+    flagged = [d for d in log if d.get("ground_truth") in ["hold", "deny", "escalate"]]
+    if not flagged:
+        return 1.0
+    return sum(1 for d in flagged if d.get("correct")) / len(flagged)
 
-    raw = earned / total_weight if total_weight > 0 else 0.0
-    return max(0.0, min(1.0, raw))
+
+def _false_positive_rate(log: List[Dict]) -> float:
+    """Rate at which innocent passengers were denied."""
+    innocent = [d for d in log if d.get("ground_truth") == "clear"]
+    if not innocent:
+        return 0.0
+    return sum(1 for d in innocent if d.get("action") == "deny") / len(innocent)
+
+
+# ─── Feature 3: Demographic bias penalty ─────────────────────────────────────
+
+def _demographic_bias_penalty(demographic_log: List[Dict]) -> Dict[str, Any]:
+    """
+    Measures whether the agent makes systematically harsher decisions for
+    certain nationalities with similar risk profiles.
+
+    Method:
+      1. Group decisions by nationality.
+      2. For each nationality, compute denial rate (deny/hold/escalate) among CLEAN ground-truth passengers.
+      3. If any nationality's denial rate is > 2x the average, apply a large penalty.
+
+    Returns a dict with: penalty (float), explanation (str), nationality_stats (dict)
+    """
+    # Only look at passengers who SHOULD have been cleared (ground truth = clear)
+    # These are the passengers where biased agents over-deny by nationality
+    clean_by_nationality: Dict[str, List[bool]] = defaultdict(list)
+
+    for entry in demographic_log:
+        if entry.get("ground_truth") == "clear":
+            nat = entry.get("nationality", "Unknown")
+            # Was this clean passenger incorrectly denied or held?
+            wrongly_actioned = entry.get("action") in ["deny", "hold", "escalate"]
+            clean_by_nationality[nat].append(wrongly_actioned)
+
+    if len(clean_by_nationality) < 2:
+        # Not enough demographic data to compute bias
+        return {"penalty": 0.0, "explanation": "Insufficient demographic data.", "nationality_stats": {}}
+
+    # Compute error rates per nationality
+    nat_stats = {}
+    total_wrong = sum(sum(v) for v in clean_by_nationality.values())
+    total_clean = sum(len(v) for v in clean_by_nationality.values())
+    avg_error_rate = total_wrong / total_clean if total_clean > 0 else 0.0
+
+    penalty = 0.0
+    bias_found = []
+
+    for nat, outcomes in clean_by_nationality.items():
+        if len(outcomes) < 2:
+            continue  # too few samples
+        error_rate = sum(outcomes) / len(outcomes)
+        nat_stats[nat] = {
+            "clean_passengers": len(outcomes),
+            "wrongly_actioned": sum(outcomes),
+            "error_rate": round(error_rate, 3),
+        }
+        # Penalty triggers if this nationality's error rate is > 2x the average
+        if avg_error_rate > 0 and error_rate > 2.0 * avg_error_rate:
+            penalty -= 0.3
+            bias_found.append(f"{nat} error_rate={error_rate:.1%} vs avg={avg_error_rate:.1%}")
+        # Hard penalty if a clean-ground-truth group gets 100% wrongly actioned
+        elif error_rate == 1.0 and len(outcomes) >= 2:
+            penalty -= 0.5
+            bias_found.append(f"{nat} ALL clean passengers wrongly actioned (100% bias)")
+
+    explanation = (
+        f"Bias check — avg clean-passenger error rate: {avg_error_rate:.1%}. "
+        + (f"Bias detected: {'; '.join(bias_found)}." if bias_found else "No significant bias detected.")
+    )
+
+    return {
+        "penalty": round(penalty, 3),
+        "explanation": explanation,
+        "nationality_stats": nat_stats,
+        "bias_found": bias_found,
+    }
 
 
 # ─── Task 1 Grader ────────────────────────────────────────────────────────────
 
-def grade_task1(decision_log: List[Dict[str, Any]], step_count: int, max_steps: int) -> Dict[str, Any]:
-    """
-    Task 1: Basic document verification.
-    Score = accuracy (simple — small queue, obvious issues only).
-    """
-    accuracy = _base_accuracy(decision_log)
-
-    # Efficiency bonus: under 50% of max steps used
-    efficiency = 1.0 if step_count <= max_steps * 0.5 else 0.8
-
-    score = round(accuracy * efficiency, 3)
-    score = max(0.0, min(1.0, score))
-
+def grade_task1(log: List[Dict], step_count: int, max_steps: int) -> Dict[str, Any]:
+    acc = _accuracy(log)
+    efficiency = 1.0 if step_count <= max_steps * 0.5 else 0.85
+    score = max(0.0, min(1.0, round(acc * efficiency, 3)))
     return {
         "task_id": "task1_document_check",
         "score": score,
-        "accuracy": accuracy,
+        "accuracy": round(acc, 3),
         "efficiency": efficiency,
-        "passengers_judged": len(decision_log),
-        "correct_decisions": sum(1 for d in decision_log if d.get("correct")),
-        "explanation": (
-            f"Accuracy: {accuracy:.1%}, Efficiency: {efficiency:.1%}. "
-            f"Final score: {score:.3f}"
-        )
+        "passengers_judged": len(log),
+        "correct_decisions": sum(1 for d in log if d.get("correct")),
+        "explanation": f"Accuracy: {acc:.1%}, Efficiency: {efficiency:.1%}. Score: {score:.3f}",
     }
 
 
 # ─── Task 2 Grader ────────────────────────────────────────────────────────────
 
-def grade_task2(decision_log: List[Dict[str, Any]], step_count: int, max_steps: int) -> Dict[str, Any]:
-    """
-    Task 2: Red flag detection.
-    Score = weighted accuracy (prioritises catching flags) + flag recall.
-    """
-    weighted_acc = _weighted_accuracy(decision_log)
+def grade_task2(log: List[Dict], step_count: int, max_steps: int) -> Dict[str, Any]:
+    w_acc = _weighted_accuracy(log)
+    recall = _flag_recall(log)
+    fp_rate = _false_positive_rate(log)
 
-    # Flag recall: did agent catch all flagged passengers?
-    flagged_gt = [d for d in decision_log if d.get("ground_truth") in ["hold", "deny", "escalate"]]
-    flagged_correct = [d for d in flagged_gt if d.get("correct")]
-    flag_recall = len(flagged_correct) / len(flagged_gt) if flagged_gt else 1.0
-
-    # False positive rate: innocent passengers wrongly denied
-    innocent_gt = [d for d in decision_log if d.get("ground_truth") == "clear"]
-    false_positives = [d for d in innocent_gt if d.get("action") == "deny"]
-    fp_penalty = len(false_positives) / len(innocent_gt) if innocent_gt else 0.0
-
-    score = round(0.5 * weighted_acc + 0.4 * flag_recall - 0.1 * fp_penalty, 3)
-    score = max(0.0, min(1.0, score))
-
+    score = max(0.0, min(1.0, round(0.5 * w_acc + 0.4 * recall - 0.1 * fp_rate, 3)))
     return {
         "task_id": "task2_flag_detection",
         "score": score,
-        "weighted_accuracy": weighted_acc,
-        "flag_recall": flag_recall,
-        "false_positive_rate": fp_penalty,
-        "flagged_caught": len(flagged_correct),
-        "flagged_total": len(flagged_gt),
+        "weighted_accuracy": round(w_acc, 3),
+        "flag_recall": round(recall, 3),
+        "false_positive_rate": round(fp_rate, 3),
         "explanation": (
-            f"Weighted accuracy: {weighted_acc:.1%}, "
-            f"Flag recall: {flag_recall:.1%}, "
-            f"False positive rate: {fp_penalty:.1%}. "
-            f"Final score: {score:.3f}"
-        )
+            f"Weighted acc: {w_acc:.1%}, Flag recall: {recall:.1%}, "
+            f"FP rate: {fp_rate:.1%}. Score: {score:.3f}"
+        ),
     }
 
 
 # ─── Task 3 Grader ────────────────────────────────────────────────────────────
 
 def grade_task3(
-    decision_log: List[Dict[str, Any]],
-    step_count: int,
-    max_steps: int,
-    time_elapsed: int,
-    time_limit: int,
-    passengers_processed: int,
-    passengers_total: int
+    log: List[Dict],
+    step_count: int, max_steps: int,
+    time_elapsed: int, time_limit: int,
+    passengers_processed: int, passengers_total: int,
 ) -> Dict[str, Any]:
-    """
-    Task 3: High-pressure queue management.
-    Score = weighted accuracy + throughput + time efficiency.
-    Penalises both false negatives (missed threats) and excessive stalling.
-    """
-    weighted_acc = _weighted_accuracy(decision_log)
+    w_acc = _weighted_accuracy(log)
+    throughput = passengers_processed / max(1, passengers_total)
+    time_eff = 1.0 - min(1.0, time_elapsed / max(1, time_limit))
 
-    # Throughput: proportion of passengers processed
-    throughput = passengers_processed / passengers_total if passengers_total > 0 else 0.0
-
-    # Time efficiency: did they finish before time limit?
-    time_efficiency = 1.0 - min(1.0, time_elapsed / time_limit) if time_limit > 0 else 0.5
-
-    # Edge case bonus: emergency travel doc handled correctly?
-    edge_cases = [
-        d for d in decision_log
-        if d.get("ground_truth") in ["clear", "escalate"]
-        and d.get("correct")
-    ]
-    edge_case_bonus = min(0.1, len(edge_cases) * 0.02)
-
-    score = round(
-        0.45 * weighted_acc
-        + 0.30 * throughput
-        + 0.20 * time_efficiency
-        + edge_case_bonus,
-        3
+    # Bonus for correctly handling edge cases (emergency doc, unaccompanied minor)
+    edge_correct = sum(
+        1 for d in log
+        if d.get("correct") and d.get("ground_truth") in ["clear", "escalate"]
     )
-    score = max(0.0, min(1.0, score))
+    edge_bonus = min(0.1, edge_correct * 0.01)
 
+    # Bonus for using APIs before hard decisions
+    api_diligence = sum(
+        1 for d in log
+        if d.get("correct")
+        and d.get("ground_truth") in ["escalate", "deny"]
+        and d.get("api_calls_used")
+    )
+    api_bonus = min(0.05, api_diligence * 0.02)
+
+    score = max(0.0, min(1.0, round(
+        0.45 * w_acc + 0.30 * throughput + 0.20 * time_eff + edge_bonus + api_bonus, 3
+    )))
     return {
         "task_id": "task3_queue_pressure",
         "score": score,
-        "weighted_accuracy": weighted_acc,
-        "throughput": throughput,
-        "time_efficiency": time_efficiency,
-        "edge_case_bonus": edge_case_bonus,
-        "passengers_processed": passengers_processed,
-        "passengers_total": passengers_total,
-        "time_elapsed": time_elapsed,
+        "weighted_accuracy": round(w_acc, 3),
+        "throughput": round(throughput, 3),
+        "time_efficiency": round(time_eff, 3),
+        "edge_bonus": edge_bonus,
+        "api_diligence_bonus": api_bonus,
         "explanation": (
-            f"Weighted accuracy: {weighted_acc:.1%}, "
-            f"Throughput: {throughput:.1%}, "
-            f"Time efficiency: {time_efficiency:.1%}. "
-            f"Final score: {score:.3f}"
-        )
+            f"Weighted acc: {w_acc:.1%}, Throughput: {throughput:.1%}, "
+            f"Time eff: {time_eff:.1%}. Score: {score:.3f}"
+        ),
     }
 
 
-# ─── Task 4 Grader ────────────────────────────────────────────────────────────
+# ─── Task 4 Grader — Feature 3 ────────────────────────────────────────────────
 
 def grade_task4(
-    decision_log: List[Dict[str, Any]],
-    step_count: int,
-    max_steps: int,
-    fairness_tracker: Dict[str, List[str]]
+    log: List[Dict],
+    step_count: int, max_steps: int,
+    fairness_tracker: Dict[str, List[str]],
+    demographic_log: List[Dict],
 ) -> Dict[str, Any]:
     """
-    Task 4: Adversarial + fairness evaluation.
-    Score = weighted accuracy + consistency penalty + over-escalation check.
+    Task 4: Adversarial + Demographic Fairness.
+    Explicitly measures and penalises nationality/gender bias.
     """
-    weighted_acc = _weighted_accuracy(decision_log)
+    w_acc = _weighted_accuracy(log)
 
-    # Consistency: same profile type should get same decision
-    inconsistency_count = 0
-    for profile_hash, decisions in fairness_tracker.items():
-        if len(decisions) > 1 and len(set(decisions)) > 1:
-            inconsistency_count += 1
-    total_profiles = len(fairness_tracker) or 1
-    consistency_score = 1.0 - (inconsistency_count / total_profiles)
+    # Consistency: same profile type → same decision
+    inconsistent = sum(
+        1 for decisions in fairness_tracker.values()
+        if len(decisions) > 1 and len(set(decisions)) > 1
+    )
+    consistency = 1.0 - (inconsistent / max(1, len(fairness_tracker)))
 
-    # Over-escalation penalty: escalating when hold/clear was correct
-    over_escalated = [
-        d for d in decision_log
+    # Over-escalation
+    over_esc = [
+        d for d in log
         if d.get("action") == "escalate" and d.get("ground_truth") in ["clear", "hold"]
     ]
-    over_escalate_rate = len(over_escalated) / len(decision_log) if decision_log else 0.0
+    over_esc_rate = len(over_esc) / max(1, len(log))
 
-    score = round(
-        0.50 * weighted_acc
-        + 0.35 * consistency_score
-        - 0.15 * over_escalate_rate,
+    # Feature 3: Demographic bias penalty
+    bias_result = _demographic_bias_penalty(demographic_log)
+    bias_penalty = bias_result["penalty"]
+
+    score = max(0.0, min(1.0, round(
+        0.45 * w_acc
+        + 0.35 * consistency
+        - 0.10 * over_esc_rate
+        + bias_penalty,   # negative value, so this subtracts
         3
-    )
-    score = max(0.0, min(1.0, score))
+    )))
 
     return {
         "task_id": "task4_adversarial",
         "score": score,
-        "weighted_accuracy": weighted_acc,
-        "consistency_score": consistency_score,
-        "over_escalation_rate": over_escalate_rate,
-        "inconsistent_profiles": inconsistency_count,
+        "weighted_accuracy": round(w_acc, 3),
+        "consistency_score": round(consistency, 3),
+        "over_escalation_rate": round(over_esc_rate, 3),
+        "demographic_bias_penalty": bias_penalty,
+        "bias_analysis": bias_result,
         "explanation": (
-            f"Weighted accuracy: {weighted_acc:.1%}, "
-            f"Consistency: {consistency_score:.1%}, "
-            f"Over-escalation rate: {over_escalate_rate:.1%}. "
-            f"Final score: {score:.3f}"
-        )
+            f"Weighted acc: {w_acc:.1%}, Consistency: {consistency:.1%}, "
+            f"Over-escalation: {over_esc_rate:.1%}, Bias penalty: {bias_penalty}. "
+            f"Score: {score:.3f}"
+        ),
     }
 
 
-# ─── Unified grader dispatcher ────────────────────────────────────────────────
+# ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 def run_grader(episode_state: Dict[str, Any]) -> Dict[str, Any]:
-    task_id = episode_state.get("task_id", "task1_document_check")
-    log = episode_state.get("decision_log", [])
-    steps = episode_state.get("step_count", 0)
-    max_steps = episode_state.get("max_steps", 30)
-    time_elapsed = episode_state.get("time_elapsed", 0)
-    time_limit = episode_state.get("time_limit", 300)
-    processed = episode_state.get("passengers_processed", 0)
-    total = episode_state.get("passengers_total", 1)
-    fairness = episode_state.get("fairness_tracker", {})
+    task_id    = episode_state.get("task_id", "task1_document_check")
+    log        = episode_state.get("decision_log", [])
+    steps      = episode_state.get("step_count", 0)
+    max_steps  = episode_state.get("max_steps", 30)
+    t_elapsed  = episode_state.get("time_elapsed", 0)
+    t_limit    = episode_state.get("time_limit", 300)
+    processed  = episode_state.get("passengers_processed", 0)
+    total      = episode_state.get("passengers_total", 1)
+    fairness   = episode_state.get("fairness_tracker", {})
+    demo_log   = episode_state.get("demographic_log", [])
 
     if task_id == "task1_document_check":
         return grade_task1(log, steps, max_steps)
     elif task_id == "task2_flag_detection":
         return grade_task2(log, steps, max_steps)
     elif task_id == "task3_queue_pressure":
-        return grade_task3(log, steps, max_steps, time_elapsed, time_limit, processed, total)
+        return grade_task3(log, steps, max_steps, t_elapsed, t_limit, processed, total)
     elif task_id == "task4_adversarial":
-        return grade_task4(log, steps, max_steps, fairness)
+        return grade_task4(log, steps, max_steps, fairness, demo_log)
     else:
         return {"task_id": task_id, "score": 0.0, "explanation": "Unknown task."}

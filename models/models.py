@@ -1,43 +1,43 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from enum import Enum
-from datetime import date
 
 
 # ─── Enums ────────────────────────────────────────────────────────────────────
 
 class ActionType(str, Enum):
-    CLEAR = "clear"
-    HOLD = "hold"
-    DENY = "deny"
-    REQUEST_DOCUMENT = "request_document"
-    ESCALATE = "escalate"
-    ASSIGN_COUNTER = "assign_counter"  # used in multi-counter mode
+    CLEAR             = "clear"
+    HOLD              = "hold"
+    DENY              = "deny"
+    ESCALATE          = "escalate"
+    REQUEST_DOCUMENT  = "request_document"
+    QUERY_INTERPOL    = "query_interpol"
+    VERIFY_BIOMETRICS = "verify_biometrics"
 
 
 class DocumentType(str, Enum):
-    PASSPORT = "passport"
-    VISA = "visa"
-    BOARDING_PASS = "boarding_pass"
-    TRAVEL_PERMIT = "travel_permit"
+    PASSPORT             = "passport"
+    VISA                 = "visa"
+    BOARDING_PASS        = "boarding_pass"
+    TRAVEL_PERMIT        = "travel_permit"
     EMERGENCY_TRAVEL_DOC = "emergency_travel_doc"
-    RESIDENCE_PERMIT = "residence_permit"
+    RESIDENCE_PERMIT     = "residence_permit"
 
 
 class PassengerStatus(str, Enum):
-    WAITING = "waiting"
+    WAITING       = "waiting"
     IN_PROCESSING = "in_processing"
-    CLEARED = "cleared"
-    HELD = "held"
-    DENIED = "denied"
-    ESCALATED = "escalated"
+    CLEARED       = "cleared"
+    HELD          = "held"
+    DENIED        = "denied"
+    ESCALATED     = "escalated"
 
 
 class RiskLevel(str, Enum):
-    CLEAN = "clean"
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
+    CLEAN    = "clean"
+    LOW      = "low"
+    MEDIUM   = "medium"
+    HIGH     = "high"
     CRITICAL = "critical"
 
 
@@ -47,13 +47,12 @@ class Document(BaseModel):
     doc_type: DocumentType
     doc_number: str
     issuing_country: str
-    expiry_date: Optional[str] = None           # ISO format YYYY-MM-DD
+    expiry_date: Optional[str] = None
     issue_date: Optional[str] = None
     name_on_doc: str
-    is_authentic: bool = True                   # ground truth (hidden from agent)
-    anomaly: Optional[str] = None               # e.g. "name_mismatch", "expired"
-    visa_type: Optional[str] = None             # tourist, work, student, transit
-    visa_entries: Optional[str] = None          # single, multiple
+    anomaly: Optional[str] = None
+    visa_type: Optional[str] = None
+    visa_entries: Optional[str] = None
     destination_countries: Optional[List[str]] = None
 
 
@@ -65,19 +64,12 @@ class TravelHistory(BaseModel):
     visa_compliant: bool = True
 
 
-class BiometricData(BaseModel):
-    face_match_score: float = Field(ge=0.0, le=1.0)   # 1.0 = perfect match
-    fingerprint_match: bool = True
-    iris_scan_match: Optional[bool] = None
-
-
-class WatchlistMatch(BaseModel):
-    matched: bool = False
-    match_score: float = Field(default=0.0, ge=0.0, le=1.0)
-    match_reason: Optional[str] = None
-
-
 class PassengerProfile(BaseModel):
+    """
+    Sanitised passenger view for the agent.
+    Biometrics and watchlist results are HIDDEN until queried via
+    verify_biometrics / query_interpol actions.
+    """
     passenger_id: str
     name: str
     nationality: str
@@ -85,44 +77,56 @@ class PassengerProfile(BaseModel):
     gender: str
     destination: str
     flight_number: str
-    travel_purpose: str                         # tourism, business, transit, work, study
+    travel_purpose: str
     documents: List[Document]
     travel_history: List[TravelHistory] = []
-    biometrics: BiometricData
-    watchlist_match: WatchlistMatch
-    special_circumstances: List[str] = []      # e.g. "medical_emergency", "unaccompanied_minor"
-    ground_truth_decision: str                  # clear / hold / deny / escalate
+    special_circumstances: List[str] = []
+    flags: List[str] = []
+    queried_biometrics: Optional[Dict[str, Any]] = None
+    queried_watchlist: Optional[Dict[str, Any]] = None
+
+
+class _PassengerInternalData(BaseModel):
+    """Ground-truth data — never sent to agent. Only used by environment internally."""
+    passenger_id: str
+    is_authentic: bool = True
+    face_match_score: float = 0.95
+    fingerprint_match: bool = True
+    watchlist_matched: bool = False
+    watchlist_score: float = 0.0
+    watchlist_reason: Optional[str] = None
+    ground_truth_decision: str
     ground_truth_reason: str
     risk_level: RiskLevel
-    flags: List[str] = []                       # auto-detected anomalies shown to agent
+    nationality: str
+    gender: str
 
-
-# ─── OpenEnv Core Models ──────────────────────────────────────────────────────
 
 class ImmigrationObservation(BaseModel):
     """What the agent sees at each step."""
     current_passenger: Optional[PassengerProfile] = None
     queue_length: int = 0
-    queue_summary: List[Dict[str, Any]] = []    # brief info on waiting passengers
-    time_remaining: int = 0                     # seconds left in episode
+    queue_summary: List[Dict[str, Any]] = []
+    time_remaining: int = 0
     step_count: int = 0
     max_steps: int = 100
-    processing_result: str = ""                 # feedback from last action
-    auto_flags: List[str] = []                  # system-detected anomalies
+    processing_result: str = ""
+    auto_flags: List[str] = []
     episode_id: str = ""
     task_id: str = ""
-    documents_requested: List[str] = []         # docs agent has already requested
+    documents_requested: List[str] = []
     secondary_screening_available: bool = True
-    fairness_score: float = 1.0                 # drops if agent is inconsistent
+    fairness_score: float = 1.0
+    api_calls_used: List[str] = []
+    api_calls_remaining: int = 4
 
 
 class ImmigrationAction(BaseModel):
     """What the agent can do."""
     action_type: ActionType
     passenger_id: str
-    reason: str = ""                            # agent's stated justification
-    document_requested: Optional[str] = None    # if action_type = request_document
-    counter_id: Optional[int] = None            # if action_type = assign_counter
+    reason: str = ""
+    document_requested: Optional[str] = None
 
 
 class ImmigrationReward(BaseModel):
@@ -130,7 +134,7 @@ class ImmigrationReward(BaseModel):
     total: float
     decision_reward: float = 0.0
     speed_bonus: float = 0.0
-    escalation_quality: float = 0.0
+    api_cost: float = 0.0
     fairness_penalty: float = 0.0
     loop_penalty: float = 0.0
     breakdown: Dict[str, float] = {}
@@ -153,7 +157,8 @@ class EpisodeState(BaseModel):
     decision_log: List[Dict[str, Any]] = []
     current_passenger_id: Optional[str] = None
     done: bool = False
-    fairness_tracker: Dict[str, List[str]] = {}  # profile_hash -> [decisions]
+    fairness_tracker: Dict[str, List[str]] = {}
+    demographic_log: List[Dict[str, Any]] = []
 
 
 class StepResult(BaseModel):
