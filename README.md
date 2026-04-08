@@ -1,3 +1,12 @@
+---
+title: Airport Immigration Env
+emoji: ✈️
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
 # ✈️ Airport Immigration Processing Environment
 
 An [OpenEnv](https://github.com/meta-pytorch/OpenEnv) environment where an AI agent plays the role of an airport immigration officer — processing passengers, querying live databases, detecting document fraud, and making decisions under time pressure.
