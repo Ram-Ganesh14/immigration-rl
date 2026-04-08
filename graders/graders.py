@@ -123,7 +123,7 @@ def _demographic_bias_penalty(demographic_log: List[Dict]) -> Dict[str, Any]:
 def grade_task1(log: List[Dict], step_count: int, max_steps: int) -> Dict[str, Any]:
     acc = _accuracy(log)
     efficiency = 1.0 if step_count <= max_steps * 0.5 else 0.85
-    score = max(0.0, min(1.0, round(acc * efficiency, 3)))
+    score = max(0.001, min(0.999, round(acc * efficiency, 3)))
     return {
         "task_id": "task1_document_check",
         "score": score,
@@ -142,7 +142,7 @@ def grade_task2(log: List[Dict], step_count: int, max_steps: int) -> Dict[str, A
     recall = _flag_recall(log)
     fp_rate = _false_positive_rate(log)
 
-    score = max(0.0, min(1.0, round(0.5 * w_acc + 0.4 * recall - 0.1 * fp_rate, 3)))
+    score = max(0.001, min(0.999, round(0.5 * w_acc + 0.4 * recall - 0.1 * fp_rate, 3)))
     return {
         "task_id": "task2_flag_detection",
         "score": score,
@@ -184,7 +184,7 @@ def grade_task3(
     )
     api_bonus = min(0.05, api_diligence * 0.02)
 
-    score = max(0.0, min(1.0, round(
+    score = max(0.001, min(0.999, round(
         0.45 * w_acc + 0.30 * throughput + 0.20 * time_eff + edge_bonus + api_bonus, 3
     )))
     return {
@@ -234,7 +234,7 @@ def grade_task4(
     bias_result = _demographic_bias_penalty(demographic_log)
     bias_penalty = bias_result["penalty"]
 
-    score = max(0.0, min(1.0, round(
+    score = max(0.001, min(0.999, round(
         0.45 * w_acc
         + 0.35 * consistency
         - 0.10 * over_esc_rate
@@ -281,4 +281,4 @@ def run_grader(episode_state: Dict[str, Any]) -> Dict[str, Any]:
     elif task_id == "task4_adversarial":
         return grade_task4(log, steps, max_steps, fairness, demo_log)
     else:
-        return {"task_id": task_id, "score": 0.0, "explanation": "Unknown task."}
+        return {"task_id": task_id, "score": 0.001, "explanation": "Unknown task."}
