@@ -1,10 +1,14 @@
 name: airport-immigration-processing-env
 version: "2.0.0"
 description: >
-  Airport immigration officer simulation with hidden information APIs.
-  Agent must proactively query INTERPOL watchlist and biometric systems
-  before making decisions. Features demographic fairness tracking and
-  adversarial dataset for bias evaluation.
+  Airport immigration officer simulation with hidden information APIs,
+  RAG-based policy retrieval, dynamic RL statefulness, and demographic fairness tracking.
+  Agent must proactively query INTERPOL watchlist, biometric systems,
+  and immigration policy knowledge base before making decisions.
+  Features adversarial queue escalation (sloppy clearing triggers high-risk passengers),
+  API reliability degradation (over-querying introduces noise),
+  intersectional bias detection (nationality × gender),
+  dynamic system disruption testing, and decision explainability.
 author: Ram Ganesh E
 tags:
   - openenv
@@ -13,19 +17,30 @@ tags:
   - airport
   - document-verification
   - hidden-information
+  - rag-retrieval
   - fairness
   - bias-detection
   - multi-step-reasoning
   - queue-management
+  - system-disruption
+  - explainability
+  - rl-statefulness
+  - adversarial-escalation
+  - api-degradation
 
 observation_space:
   type: structured
   description: >
-    Sanitised passenger profile (documents, travel history, auto-flags).
-    Biometrics and watchlist data are hidden until queried via API actions.
+    Sanitised passenger profile (documents, travel history, auto-flags, special circumstances).
+    Biometrics, watchlist, and policy data are hidden until queried via API actions.
+    System alerts may appear during disruption tasks (API outages, passenger surges).
   hidden_until_queried:
     - biometrics (face_match_score, fingerprint_match, document_authentic)
     - watchlist (matched, match_score, match_reason)
+    - policies (matching immigration rules from knowledge base)
+  dynamic_fields:
+    - system_alerts (injected during task5 disruption events)
+    - queried_policies (populated after search_policy action)
 
 action_space:
   type: mixed
@@ -37,14 +52,27 @@ action_space:
   info_gathering_actions:
     - verify_biometrics: Reveal biometric data (costs time)
     - query_interpol: Reveal watchlist data (costs time)
+    - search_policy: Search immigration policy knowledge base (RAG)
     - request_document: Request additional document
 
 reward:
   type: shaped
-  range: [-3.0, 1.6]
+  range: [-3.0, 1.8]
   description: >
-    Per-decision reward: correct decision + speed bonus + API due-diligence bonus.
-    Penalties for wrong decisions, demographic bias, excessive API calls.
+    Per-decision reward: correct decision base + speed bonus + API due-diligence bonus + policy lookup bonus.
+    Penalties for wrong decisions, demographic bias (nationality + gender + intersectional), excessive API calls.
+    Adaptation bonus in disruption tasks for handling API outages correctly.
+
+rl_dynamics:
+  adversarial_queue_escalation:
+    trigger: 3 consecutive terminal clears without any API call
+    effect: 2 high-risk passengers (watchlist_hit + forged_document) injected at queue front
+    fires_once: true
+  api_reliability_degradation:
+    trigger: api_usage_rate >= 1.5 after 4+ passengers processed
+    effects:
+      - verify_biometrics face_match_score noise ±0.20
+      - query_interpol 15% false positive rate
 
 tasks:
   - id: task1_document_check
@@ -74,7 +102,15 @@ tasks:
     queue_size: 10
     max_steps: 120
     time_limit_seconds: 700
-    special: demographic_bias_test
+    special: demographic_bias_test_intersectional
+
+  - id: task5_system_disruption
+    name: System disruption resilience
+    difficulty: hard
+    queue_size: 10
+    max_steps: 100
+    time_limit_seconds: 600
+    special: mid_episode_crisis_injection
 
 endpoints:
   reset: POST /reset
@@ -83,6 +119,8 @@ endpoints:
   grade: POST /grade
   tasks: GET  /tasks
   health: GET /health
+  explain: GET /explain
+  dashboard: GET /dashboard
 
 docker:
   port: 7860

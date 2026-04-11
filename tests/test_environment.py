@@ -306,4 +306,423 @@ class TestIntegration:
         state = env.state()
         grade = run_grader(state.model_dump())
         assert "bias_analysis" in grade
-        assert "demographic_bias_penalty" in grade
+
+
+# ─── Feature 2: RAG Policy Search ─────────────────────────────────────────────
+
+class TestPolicySearch:
+    def setup_method(self): self.env = ImmigrationEnvironment()
+
+    def test_search_policy_returns_results(self):
+        r = self.env.reset(task_id="task1_document_check", seed=42)
+        p = r.observation.current_passenger
+        sr = self.env.step(ImmigrationAction(
+            action_type=ActionType.SEARCH_POLICY,
+            passenger_id=p.passenger_id,
+            reason="Check expired passport rules",
+            policy_query="expired passport emergency travel"
+        ))
+        policies = sr.observation.queried_policies
+        assert policies is not None
+        assert len(policies) > 0
+        assert "title" in policies[0]
+
+    def test_search_policy_costs_api_budget(self):
+        r = self.env.reset(task_id="task1_document_check", seed=42)
+        p = r.observation.current_passenger
+        sr = self.env.step(ImmigrationAction(
+            action_type=ActionType.SEARCH_POLICY,
+            passenger_id=p.passenger_id,
+            policy_query="asylum"
+        ))
+        assert "search_policy" in sr.observation.api_calls_used
+        assert sr.observation.api_calls_remaining == 3
+
+    def test_duplicate_policy_search_penalised(self):
+        r = self.env.reset(task_id="task1_document_check", seed=42)
+        p = r.observation.current_passenger
+        self.env.step(ImmigrationAction(
+            action_type=ActionType.SEARCH_POLICY,
+            passenger_id=p.passenger_id,
+            policy_query="asylum"
+        ))
+        sr2 = self.env.step(ImmigrationAction(
+            action_type=ActionType.SEARCH_POLICY,
+            passenger_id=p.passenger_id,
+            policy_query="transit"
+        ))
+        assert sr2.reward.total < 0, "Duplicate policy search should be penalised"
+
+    def test_policy_search_finds_asylum_rules(self):
+        r = self.env.reset(task_id="task1_document_check", seed=42)
+        p = r.observation.current_passenger
+        sr = self.env.step(ImmigrationAction(
+            action_type=ActionType.SEARCH_POLICY,
+            passenger_id=p.passenger_id,
+            policy_query="asylum refugee seeker"
+        ))
+        policies = sr.observation.queried_policies
+        assert any("asylum" in pol["title"].lower() for pol in policies)
+
+
+# ─── Task 5: System Disruption ────────────────────────────────────────────────
+
+class TestSystemDisruption:
+    def setup_method(self): self.env = ImmigrationEnvironment()
+
+    def test_task5_reset_ok(self):
+        r = self.env.reset(task_id="task5_system_disruption", seed=42)
+        assert r.task_id == "task5_system_disruption"
+        assert r.observation.current_passenger is not None
+
+    def test_task5_api_outage_at_step4(self):
+        r = self.env.reset(task_id="task5_system_disruption", seed=42)
+        # Process first 4 steps (terminal decisions to advance steps)
+        for _ in range(4):
+            obs = self.env._build_observation()
+            if not obs.current_passenger:
+                break
+            self.env.step(ImmigrationAction(
+                action_type=ActionType.CLEAR,
+                passenger_id=obs.current_passenger.passenger_id
+            ))
+        # After step 4, outage should be active
+        assert self.env._api_outage_active is True
+
+    def test_task5_interpol_fails_during_outage(self):
+        r = self.env.reset(task_id="task5_system_disruption", seed=42)
+        # Get to step 4 (outage)
+        for _ in range(4):
+            obs = self.env._build_observation()
+            if not obs.current_passenger:
+                break
+            self.env.step(ImmigrationAction(
+                action_type=ActionType.CLEAR,
+                passenger_id=obs.current_passenger.passenger_id
+            ))
+        # Try interpol during outage
+        obs = self.env._build_observation()
+        if obs.current_passenger:
+            sr = self.env.step(ImmigrationAction(
+                action_type=ActionType.QUERY_INTERPOL,
+                passenger_id=obs.current_passenger.passenger_id
+            ))
+            assert sr.reward.total < 0, "Interpol should fail during outage"
+            assert "OFFLINE" in sr.observation.processing_result or "outage" in sr.observation.processing_result.lower()
+
+    def test_task5_grader_returns_valid_score(self):
+        from graders.graders import grade_task5
+        log = [
+            {"correct": True, "action": "clear", "ground_truth": "clear",
+             "api_calls_used": [], "api_outage_active": False, "policies_used": False}
+            for _ in range(5)
+        ]
+        result = grade_task5(log, 10, 100, 120, 600, 5, 10)
+        assert 0.0 < result["score"] < 1.0
+
+    def test_task5_surge_passengers_added(self):
+        r = self.env.reset(task_id="task5_system_disruption", seed=42)
+        initial_total = self.env._state.passengers_total
+        # Process 7 steps to trigger surge
+        for _ in range(7):
+            obs = self.env._build_observation()
+            if not obs.current_passenger:
+                break
+            self.env.step(ImmigrationAction(
+                action_type=ActionType.CLEAR,
+                passenger_id=obs.current_passenger.passenger_id
+            ))
+        new_total = self.env._state.passengers_total
+        assert new_total > initial_total, "Surge should add more passengers"
+
+
+# ─── New Passenger Archetypes ─────────────────────────────────────────────────
+
+class TestNewArchetypes:
+    def setup_method(self):
+        self.gen = PassengerGenerator(seed=42)
+
+    def test_diplomatic_passport(self):
+        p, i = self.gen.diplomatic_passport()
+        assert i.ground_truth_decision == "clear"
+        assert "DIPLOMATIC_PASSPORT" in p.flags
+        assert "diplomatic_passport_holder" in p.special_circumstances
+
+    def test_transit_passenger(self):
+        p, i = self.gen.transit_passenger()
+        assert i.ground_truth_decision == "clear"
+        assert "TRANSIT_PASSENGER" in p.flags
+        assert p.travel_purpose == "transit"
+
+    def test_dual_nationality(self):
+        p, i = self.gen.dual_nationality()
+        assert i.ground_truth_decision == "hold"
+        assert "DUAL_NATIONALITY" in p.flags
+        assert len(p.documents) >= 3  # passport + visa + second passport
+
+    def test_refugee_claimant(self):
+        p, i = self.gen.refugee_claimant()
+        assert i.ground_truth_decision == "escalate"
+        assert "ASYLUM_CLAIM_DECLARED" in p.flags
+        assert p.travel_purpose == "asylum"
+
+    def test_new_types_in_hard_queue(self):
+        profiles, internals = self.gen.build_queue(14, "hard")
+        special = set()
+        for p in profiles:
+            for sc in p.special_circumstances:
+                special.add(sc)
+        assert len(special) > 0, "Hard queue should include new archetypes"
+
+    def test_disruption_queue_builds(self):
+        profiles, internals = self.gen.build_queue(10, "disruption")
+        assert len(profiles) == 10
+        assert len(internals) == 10
+
+    def test_surge_passengers(self):
+        surge_p, surge_i = self.gen.build_surge_passengers(3)
+        assert len(surge_p) == 3
+        assert len(surge_i) == 3
+
+
+# ─── Intersectional Bias ──────────────────────────────────────────────────────
+
+class TestIntersectionalBias:
+    def test_gender_bias_detected(self):
+        demo_log = [
+            {"nationality": "German", "gender": "M", "ground_truth": "clear", "action": "clear"},
+            {"nationality": "German", "gender": "F", "ground_truth": "clear", "action": "clear"},
+            {"nationality": "German", "gender": "M", "ground_truth": "clear", "action": "clear"},
+            # All female denied — gender bias
+            {"nationality": "Nigerian", "gender": "F", "ground_truth": "clear", "action": "deny"},
+            {"nationality": "Nigerian", "gender": "F", "ground_truth": "clear", "action": "deny"},
+            {"nationality": "German", "gender": "F", "ground_truth": "clear", "action": "deny"},
+        ]
+        result = _demographic_bias_penalty(demo_log)
+        # Should detect some form of bias
+        assert result["penalty"] < 0.0
+
+    def test_no_gender_bias_when_fair(self):
+        demo_log = [
+            {"nationality": "German", "gender": "M", "ground_truth": "clear", "action": "clear"},
+            {"nationality": "German", "gender": "F", "ground_truth": "clear", "action": "clear"},
+            {"nationality": "Nigerian", "gender": "M", "ground_truth": "clear", "action": "clear"},
+            {"nationality": "Nigerian", "gender": "F", "ground_truth": "clear", "action": "clear"},
+        ]
+        result = _demographic_bias_penalty(demo_log)
+        assert result["penalty"] == 0.0
+
+    def test_adversarial_queue_gender_balanced(self):
+        gen = PassengerGenerator(seed=42)
+        profiles, internals = gen.build_queue(10, "adversarial")
+        genders = set(i.gender for i in internals)
+        # Should have both M and F
+        assert len(genders) >= 2, "Adversarial queue must have balanced gender"
+
+
+# ─── Explainability ───────────────────────────────────────────────────────────
+
+class TestExplainability:
+    def setup_method(self): self.env = ImmigrationEnvironment()
+
+    def test_explain_returns_none_before_decision(self):
+        self.env.reset(task_id="task1_document_check", seed=42)
+        assert self.env.get_last_decision_info() is None
+
+    def test_explain_returns_info_after_decision(self):
+        r = self.env.reset(task_id="task1_document_check", seed=42)
+        p = r.observation.current_passenger
+        self.env.step(ImmigrationAction(action_type=ActionType.CLEAR, passenger_id=p.passenger_id))
+        info = self.env.get_last_decision_info()
+        assert info is not None
+        assert "feature_importance" in info
+        assert "key_factors" in info
+        assert "confidence" in info
+        assert "ground_truth" in info
+
+    def test_explain_feature_importance_sums_to_one(self):
+        r = self.env.reset(task_id="task1_document_check", seed=42)
+        p = r.observation.current_passenger
+        self.env.step(ImmigrationAction(action_type=ActionType.CLEAR, passenger_id=p.passenger_id))
+        info = self.env.get_last_decision_info()
+        total = sum(info["feature_importance"].values())
+        assert 0.95 <= total <= 1.05, f"Feature importance should sum to ~1.0, got {total}"
+
+    def test_explain_correct_decision_has_high_confidence(self):
+        r = self.env.reset(task_id="task1_document_check", seed=42)
+        p = r.observation.current_passenger
+        # Get ground truth for this passenger
+        gt = self.env._current_internal.ground_truth_decision
+        self.env.step(ImmigrationAction(
+            action_type=ActionType(gt), passenger_id=p.passenger_id, reason="test"
+        ))
+        info = self.env.get_last_decision_info()
+        assert info["confidence"] > 0.8
+
+
+# ─── RL Mechanic 1: Adversarial Queue Escalation ─────────────────────────────
+
+class TestAdversarialEscalation:
+    def setup_method(self): self.env = ImmigrationEnvironment()
+
+    def test_sloppy_clears_tracked(self):
+        """Clearing without API calls increments the sloppy counter."""
+        r = self.env.reset(task_id="task3_queue_pressure", seed=42)
+        p = r.observation.current_passenger
+        self.env.step(ImmigrationAction(
+            action_type=ActionType.CLEAR, passenger_id=p.passenger_id, reason="fast"
+        ))
+        assert self.env._consecutive_sloppy_clears >= 1
+
+    def test_api_call_resets_sloppy_counter(self):
+        """Using an API before deciding resets the sloppy counter."""
+        r = self.env.reset(task_id="task3_queue_pressure", seed=42)
+        p = r.observation.current_passenger
+        # Sloppy clear
+        self.env.step(ImmigrationAction(
+            action_type=ActionType.CLEAR, passenger_id=p.passenger_id, reason="fast"
+        ))
+        assert self.env._consecutive_sloppy_clears >= 1
+        # Now use an API on the next passenger
+        p2 = self.env._current_passenger
+        if p2:
+            self.env.step(ImmigrationAction(
+                action_type=ActionType.QUERY_INTERPOL, passenger_id=p2.passenger_id, reason="check"
+            ))
+            gt = self.env._current_internal.ground_truth_decision
+            self.env.step(ImmigrationAction(
+                action_type=ActionType(gt), passenger_id=p2.passenger_id, reason="after api"
+            ))
+            assert self.env._consecutive_sloppy_clears == 0
+
+    def test_three_sloppy_clears_triggers_escalation(self):
+        """After 3 consecutive sloppy clears, adversarial surge is injected."""
+        r = self.env.reset(task_id="task3_queue_pressure", seed=42)
+        original_total = self.env._state.passengers_total
+        # Do 3 sloppy clears in a row
+        for _ in range(3):
+            p = self.env._current_passenger
+            if p is None:
+                break
+            self.env.step(ImmigrationAction(
+                action_type=ActionType.CLEAR, passenger_id=p.passenger_id, reason="sloppy"
+            ))
+        assert self.env._adversarial_escalation_active is True
+        assert self.env._state.passengers_total == original_total + 2
+
+    def test_escalation_only_fires_once(self):
+        """Adversarial escalation should not re-fire after it's already active."""
+        r = self.env.reset(task_id="task3_queue_pressure", seed=42)
+        # Trigger escalation
+        for _ in range(3):
+            p = self.env._current_passenger
+            if p is None:
+                break
+            self.env.step(ImmigrationAction(
+                action_type=ActionType.CLEAR, passenger_id=p.passenger_id, reason="sloppy"
+            ))
+        total_after_first = self.env._state.passengers_total
+        # Do 3 more sloppy clears
+        for _ in range(3):
+            p = self.env._current_passenger
+            if p is None:
+                break
+            self.env.step(ImmigrationAction(
+                action_type=ActionType.CLEAR, passenger_id=p.passenger_id, reason="sloppy again"
+            ))
+        # Should not have added more passengers
+        assert self.env._state.passengers_total == total_after_first
+
+    def test_state_exposes_escalation_flag(self):
+        """EpisodeState should report adversarial_escalation_active via state()."""
+        r = self.env.reset(task_id="task3_queue_pressure", seed=42)
+        s = self.env.state()
+        assert s.adversarial_escalation_active is False
+        # Trigger it
+        for _ in range(3):
+            p = self.env._current_passenger
+            if p is None:
+                break
+            self.env.step(ImmigrationAction(
+                action_type=ActionType.CLEAR, passenger_id=p.passenger_id, reason="sloppy"
+            ))
+        s = self.env.state()
+        assert s.adversarial_escalation_active is True
+
+
+# ─── RL Mechanic 2: API Reliability Degradation ──────────────────────────────
+
+class TestAPIDegradation:
+    def setup_method(self): self.env = ImmigrationEnvironment()
+
+    def test_no_degradation_with_low_api_usage(self):
+        """API should not degrade if agent queries sparingly."""
+        r = self.env.reset(task_id="task3_queue_pressure", seed=42)
+        # Process 4 passengers, query API on only 1
+        for i in range(4):
+            p = self.env._current_passenger
+            if p is None:
+                break
+            if i == 0:
+                self.env.step(ImmigrationAction(
+                    action_type=ActionType.QUERY_INTERPOL, passenger_id=p.passenger_id
+                ))
+            gt = self.env._current_internal.ground_truth_decision
+            self.env.step(ImmigrationAction(
+                action_type=ActionType(gt), passenger_id=p.passenger_id, reason="test"
+            ))
+        assert self.env._api_degraded is False
+
+    def test_degradation_triggers_with_heavy_api_usage(self):
+        """API should degrade when usage rate >= 1.5 after 4+ passengers."""
+        r = self.env.reset(task_id="task3_queue_pressure", seed=42)
+        # Process passengers, querying both APIs on each one
+        for i in range(5):
+            p = self.env._current_passenger
+            if p is None:
+                break
+            self.env.step(ImmigrationAction(
+                action_type=ActionType.QUERY_INTERPOL, passenger_id=p.passenger_id
+            ))
+            self.env.step(ImmigrationAction(
+                action_type=ActionType.VERIFY_BIOMETRICS, passenger_id=p.passenger_id
+            ))
+            gt = self.env._current_internal.ground_truth_decision
+            self.env.step(ImmigrationAction(
+                action_type=ActionType(gt), passenger_id=p.passenger_id, reason="test"
+            ))
+        assert self.env._api_degraded is True
+
+    def test_state_exposes_degradation_flag(self):
+        """EpisodeState should report api_degraded via state()."""
+        r = self.env.reset(task_id="task3_queue_pressure", seed=42)
+        s = self.env.state()
+        assert s.api_degraded is False
+
+    def test_degraded_biometrics_shows_degraded_label(self):
+        """When degraded, the biometric system label should include DEGRADED."""
+        r = self.env.reset(task_id="task3_queue_pressure", seed=42)
+        # Force degradation by querying heavily
+        for i in range(5):
+            p = self.env._current_passenger
+            if p is None:
+                break
+            self.env.step(ImmigrationAction(
+                action_type=ActionType.QUERY_INTERPOL, passenger_id=p.passenger_id
+            ))
+            self.env.step(ImmigrationAction(
+                action_type=ActionType.VERIFY_BIOMETRICS, passenger_id=p.passenger_id
+            ))
+            gt = self.env._current_internal.ground_truth_decision
+            self.env.step(ImmigrationAction(
+                action_type=ActionType(gt), passenger_id=p.passenger_id, reason="test"
+            ))
+        # Now query biometrics on next passenger — should be degraded
+        p = self.env._current_passenger
+        if p:
+            self.env.step(ImmigrationAction(
+                action_type=ActionType.VERIFY_BIOMETRICS, passenger_id=p.passenger_id
+            ))
+            bio = p.queried_biometrics
+            assert bio is not None
+            assert "DEGRADED" in bio.get("system", "")

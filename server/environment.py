@@ -1,12 +1,16 @@
 """
 ImmigrationEnvironment — OpenEnv environment with:
   - Feature 1: Hidden biometrics/watchlist — agent must call query_interpol / verify_biometrics
-  - Feature 3: Demographic bias tracking and penalty
+  - Feature 2: search_policy — RAG action to query immigration policy knowledge base
+  - Feature 3: Demographic bias tracking and penalty (nationality + gender)
+  - Feature 4: System disruption — mid-episode crisis injection (Task 5)
 """
 
 import uuid
 import hashlib
+import json
 import time
+import os
 from typing import Optional, Dict, Any, List, Tuple
 
 from models.models import (
@@ -38,6 +42,11 @@ TASK_CONFIGS = {
         "time_limit": 700, "max_steps": 120,
         "description": "Adversarial dataset — biased nationality mix, tests fairness and consistency.",
     },
+    "task5_system_disruption": {
+        "queue_size": 10, "difficulty": "disruption",
+        "time_limit": 600, "max_steps": 100,
+        "description": "Mid-episode system failures — API outages, passenger surges, security alerts.",
+    },
 }
 
 VALID_TASKS = list(TASK_CONFIGS.keys())
@@ -56,6 +65,45 @@ REWARD_LOOP_PENALTY     = -0.1
 FAIRNESS_PENALTY        = -0.5
 API_CALL_COST           = -0.05  # small time penalty per API call (speed vs accuracy tradeoff)
 API_CALL_MAX            = 4      # per passenger
+POLICY_BONUS            = +0.15  # bonus for correctly using policy before edge-case decision
+
+# ─── Policy knowledge base ────────────────────────────────────────────────────
+
+_POLICY_DB = None
+
+def _load_policies() -> List[Dict]:
+    global _POLICY_DB
+    if _POLICY_DB is not None:
+        return _POLICY_DB
+    policy_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "data", "immigration_policies.json")
+    try:
+        with open(policy_path, "r") as f:
+            _POLICY_DB = json.load(f)
+    except FileNotFoundError:
+        _POLICY_DB = []
+    return _POLICY_DB
+
+
+def _search_policies(query: str, top_k: int = 2) -> List[Dict]:
+    """Simple keyword search over the policy knowledge base."""
+    policies = _load_policies()
+    if not query or not policies:
+        return []
+
+    query_terms = set(query.lower().split())
+    scored = []
+    for pol in policies:
+        # Score by matching query terms against tags and content
+        tag_text = " ".join(pol.get("tags", []))
+        full_text = f"{pol.get('title', '')} {pol.get('content', '')} {tag_text}".lower()
+        matches = sum(1 for term in query_terms if term in full_text)
+        if matches > 0:
+            scored.append((matches, pol))
+
+    scored.sort(key=lambda x: -x[0])
+    return [{"id": p["id"], "title": p["title"], "content": p["content"]}
+            for _, p in scored[:top_k]]
 
 
 class ImmigrationEnvironment:
@@ -70,6 +118,21 @@ class ImmigrationEnvironment:
         self._api_calls_used: List[str] = []
         self._start_time: float = 0.0
         self._task_config: Dict[str, Any] = {}
+        self._generator: Optional[PassengerGenerator] = None
+        # Task 5: system disruption state
+        self._api_outage_active: bool = False
+        self._api_outage_passengers_remaining: int = 0
+        self._surge_injected: bool = False
+        self._api_restored: bool = False
+        self._system_alerts: List[str] = []
+        self._policies_used_this_passenger: bool = False
+        # Explainability: track last decision info
+        self._last_decision_info: Optional[Dict[str, Any]] = None
+        # RL Mechanics: statefulness variables
+        self._consecutive_sloppy_clears: int = 0
+        self._global_api_calls_used: int = 0
+        self._api_degraded: bool = False
+        self._adversarial_escalation_active: bool = False
 
     # ─── Public API ───────────────────────────────────────────────────────────
 
@@ -80,8 +143,8 @@ class ImmigrationEnvironment:
         seed = seed if seed is not None else int(time.time()) % 100000
         self._task_config = TASK_CONFIGS[task_id]
 
-        gen = PassengerGenerator(seed=seed)
-        passengers, internals = gen.build_queue(
+        self._generator = PassengerGenerator(seed=seed)
+        passengers, internals = self._generator.build_queue(
             n=self._task_config["queue_size"],
             difficulty=self._task_config["difficulty"]
         )
@@ -92,6 +155,17 @@ class ImmigrationEnvironment:
         self._passenger_action_count = 0
         self._api_calls_used = []
         self._start_time = time.time()
+        self._api_outage_active = False
+        self._api_outage_passengers_remaining = 0
+        self._surge_injected = False
+        self._api_restored = False
+        self._system_alerts = []
+        self._policies_used_this_passenger = False
+        self._last_decision_info = None
+        self._consecutive_sloppy_clears = 0
+        self._global_api_calls_used = 0
+        self._api_degraded = False
+        self._adversarial_escalation_active = False
 
         episode_id = str(uuid.uuid4())[:12]
         self._state = EpisodeState(
@@ -121,6 +195,10 @@ class ImmigrationEnvironment:
         self._state.step_count += 1
         self._state.time_elapsed = int(time.time() - self._start_time)
         self._passenger_action_count += 1
+
+        # ── Task 5: Crisis injection ──────────────────────────────────────
+        if self._state.task_id == "task5_system_disruption":
+            self._inject_crisis()
 
         reward, feedback = self._process_action(action)
         self._state.cumulative_reward += reward.total
@@ -163,7 +241,66 @@ class ImmigrationEnvironment:
         self._state.current_passenger_id = (
             self._current_passenger.passenger_id if self._current_passenger else None
         )
+        self._state.api_degraded = self._api_degraded
+        self._state.adversarial_escalation_active = self._adversarial_escalation_active
         return self._state
+
+    def get_last_decision_info(self) -> Optional[Dict[str, Any]]:
+        """Returns explainability info about the last terminal decision made."""
+        return self._last_decision_info
+
+    # ─── Task 5: Crisis injection ─────────────────────────────────────────────
+
+    def _inject_crisis(self):
+        """Inject dynamic disruptions at specific steps during Task 5."""
+        step = self._state.step_count
+        self._system_alerts = []
+
+        # Step 4: INTERPOL API goes offline
+        if step == 4 and not self._api_outage_active:
+            self._api_outage_active = True
+            self._api_outage_passengers_remaining = 3
+            self._system_alerts.append(
+                "⚠ SYSTEM ALERT: INTERPOL_API_TEMPORARILY_OFFLINE — "
+                "Watchlist queries unavailable. Fallback to document-only verification."
+            )
+
+        # Track outage duration per passenger processed
+        if self._api_outage_active and self._api_outage_passengers_remaining <= 0:
+            self._api_outage_active = False
+            if not self._api_restored:
+                self._api_restored = True
+                self._system_alerts.append(
+                    "✓ SYSTEM RESTORED: INTERPOL_API_ONLINE — Watchlist queries available again."
+                )
+
+        # Step 7: Passenger surge
+        if step == 7 and not self._surge_injected and self._generator:
+            self._surge_injected = True
+            surge_p, surge_i = self._generator.build_surge_passengers(3)
+            self._queue.extend(surge_p)
+            self._internal_queue.extend(surge_i)
+            self._state.passengers_total += len(surge_p)
+            self._system_alerts.append(
+                f"🚨 SURGE ALERT: {len(surge_p)} additional passengers added to queue — "
+                "delayed flight arrival. Manage time carefully."
+            )
+
+    def _trigger_adversarial_surge(self):
+        """Inject an adversarial risk escalation due to sloppy clearing."""
+        if not self._generator:
+            return
+        self._adversarial_escalation_active = True
+        self._api_degraded = False # reset if escalated
+        p1, i1 = self._generator.watchlist_hit()
+        p2, i2 = self._generator.forged_document()
+        # insert at the front of the queue
+        self._queue = [p1, p2] + self._queue
+        self._internal_queue = [i1, i2] + self._internal_queue
+        self._state.passengers_total += 2
+        self._system_alerts.append(
+            "🚨 ESCALATION ALERT: High-risk passengers injected due to lax document screening."
+        )
 
     # ─── Action processing ────────────────────────────────────────────────────
 
@@ -185,6 +322,10 @@ class ImmigrationEnvironment:
         # ── Feature 1: verify_biometrics ───────────────────────────────────
         if action.action_type == ActionType.VERIFY_BIOMETRICS:
             return self._handle_verify_biometrics(passenger, internal)
+
+        # ── Feature 2: search_policy (RAG) ─────────────────────────────────
+        if action.action_type == ActionType.SEARCH_POLICY:
+            return self._handle_search_policy(action, passenger)
 
         # ── request_document ───────────────────────────────────────────────
         if action.action_type == ActionType.REQUEST_DOCUMENT:
@@ -209,6 +350,16 @@ class ImmigrationEnvironment:
             ), "No current passenger."
 
         reward = self._evaluate_decision(action, passenger, internal)
+
+        # Track RL dynamics: Sloppy Clears
+        if action.action_type == ActionType.CLEAR and len(self._api_calls_used) == 0:
+            self._consecutive_sloppy_clears += 1
+        else:
+            self._consecutive_sloppy_clears = 0
+
+        # Mechanic 1: Trigger Adversarial Escalation
+        if self._consecutive_sloppy_clears >= 3 and not self._adversarial_escalation_active:
+            self._trigger_adversarial_surge()
 
         # Fairness tracking (Feature 3)
         profile_hash = self._profile_hash(internal)
@@ -243,7 +394,16 @@ class ImmigrationEnvironment:
             "ground_truth": internal.ground_truth_decision,
             "reward": round(reward.total, 3),
             "api_calls_used": list(self._api_calls_used),
+            "policies_used": self._policies_used_this_passenger,
+            "api_outage_active": self._api_outage_active,
         })
+
+        # Store explainability info
+        self._last_decision_info = self._build_explain_info(action, passenger, internal, reward)
+
+        # Track outage passenger count for Task 5
+        if self._api_outage_active:
+            self._api_outage_passengers_remaining -= 1
 
         # Advance to next passenger
         self._state.passengers_processed += 1
@@ -258,6 +418,15 @@ class ImmigrationEnvironment:
         """Reveal watchlist data. Charges a small time cost."""
         if not passenger or not internal:
             return ImmigrationReward(total=0.0, explanation="No passenger."), "No passenger."
+
+        # Task 5: API outage check
+        if self._api_outage_active:
+            return ImmigrationReward(
+                total=REWARD_LOOP_PENALTY,
+                loop_penalty=REWARD_LOOP_PENALTY,
+                breakdown={"api_outage": REWARD_LOOP_PENALTY},
+                explanation="INTERPOL API is temporarily offline. Cannot query."
+            ), "⚠ INTERPOL API OFFLINE. Use document-only verification or try later."
 
         api_reward = API_CALL_COST
         calls_used = len(self._api_calls_used)
@@ -276,22 +445,36 @@ class ImmigrationEnvironment:
                 explanation="Interpol already queried for this passenger."
             ), "⚠ Already queried Interpol for this passenger."
 
+        self._global_api_calls_used += 1
+        usage_rate = self._global_api_calls_used / max(1, self._state.passengers_processed)
+        if self._state.passengers_processed >= 4 and usage_rate >= 1.5:
+            self._api_degraded = True
+
         self._api_calls_used.append("query_interpol")
+
+        wl_matched = internal.watchlist_matched
+        wl_score = internal.watchlist_score
+        wl_reason = internal.watchlist_reason
+        import random
+        if self._api_degraded and random.random() < 0.15: # 15% chance of false positive noise
+            wl_matched = True
+            wl_score = min(1.0, wl_score + 0.3)
+            wl_reason = "fuzzy_match (low confidence)"
 
         # Inject results into the passenger's queried_watchlist field
         passenger.queried_watchlist = {
-            "matched": internal.watchlist_matched,
-            "match_score": internal.watchlist_score,
-            "match_reason": internal.watchlist_reason,
-            "database": "INTERPOL + NATIONAL_WATCHLIST",
+            "matched": wl_matched,
+            "match_score": wl_score,
+            "match_reason": wl_reason,
+            "database": "INTERPOL + NATIONAL_WATCHLIST" + (" (DEGRADED)" if self._api_degraded else ""),
             "queried_at_step": self._state.step_count,
         }
 
         result_str = (
             f"INTERPOL QUERY RESULT for {passenger.name}: "
-            f"Match={internal.watchlist_matched}, "
-            f"Score={internal.watchlist_score:.2f}, "
-            f"Reason={internal.watchlist_reason or 'None'}"
+            f"Match={wl_matched}, "
+            f"Score={wl_score:.2f}, "
+            f"Reason={wl_reason or 'None'}"
         )
 
         return ImmigrationReward(
@@ -323,19 +506,29 @@ class ImmigrationEnvironment:
                 explanation="Biometrics already verified for this passenger."
             ), "⚠ Already verified biometrics for this passenger."
 
+        self._global_api_calls_used += 1
+        usage_rate = self._global_api_calls_used / max(1, self._state.passengers_processed)
+        if self._state.passengers_processed >= 4 and usage_rate >= 1.5:
+            self._api_degraded = True
+
         self._api_calls_used.append("verify_biometrics")
 
+        import random
+        face_score = internal.face_match_score
+        if self._api_degraded:
+            face_score = max(0.0, min(1.0, face_score + random.uniform(-0.20, 0.20)))
+
         passenger.queried_biometrics = {
-            "face_match_score": internal.face_match_score,
+            "face_match_score": face_score,
             "fingerprint_match": internal.fingerprint_match,
             "document_authentic": internal.is_authentic,
-            "system": "BIOMETRIC_VERIFICATION_SYSTEM_v2",
+            "system": "BIOMETRIC_VERIFICATION_SYSTEM_v2" + (" (DEGRADED)" if self._api_degraded else ""),
             "queried_at_step": self._state.step_count,
         }
 
         result_str = (
             f"BIOMETRIC RESULT for {passenger.name}: "
-            f"Face match={internal.face_match_score:.2f}, "
+            f"Face match={face_score:.2f}, "
             f"Fingerprint={'OK' if internal.fingerprint_match else 'FAIL'}, "
             f"Document authentic={'YES' if internal.is_authentic else 'NO — FORGERY DETECTED'}"
         )
@@ -345,6 +538,55 @@ class ImmigrationEnvironment:
             api_cost=API_CALL_COST,
             breakdown={"api_call_biometrics": API_CALL_COST},
             explanation=f"Biometrics verified. Cost: {API_CALL_COST}."
+        ), result_str
+
+    def _handle_search_policy(
+        self, action: ImmigrationAction, passenger: Optional[PassengerProfile]
+    ) -> Tuple[ImmigrationReward, str]:
+        """Search the immigration policy knowledge base (RAG action)."""
+        if not passenger:
+            return ImmigrationReward(total=0.0, explanation="No passenger."), "No passenger."
+
+        calls_used = len(self._api_calls_used)
+        if calls_used >= API_CALL_MAX:
+            return ImmigrationReward(
+                total=REWARD_LOOP_PENALTY,
+                loop_penalty=REWARD_LOOP_PENALTY,
+                explanation="API call budget exhausted."
+            ), "⚠ API budget exhausted."
+
+        if "search_policy" in self._api_calls_used:
+            return ImmigrationReward(
+                total=REWARD_LOOP_PENALTY,
+                loop_penalty=REWARD_LOOP_PENALTY,
+                explanation="Policy already searched for this passenger."
+            ), "⚠ Already searched policies for this passenger."
+
+        self._api_calls_used.append("search_policy")
+        self._policies_used_this_passenger = True
+
+        query = action.policy_query or action.reason or ""
+        results = _search_policies(query, top_k=2)
+
+        # Store in observation for next step
+        passenger.queried_watchlist  # keep existing
+        # We'll inject into observation via _build_observation
+
+        result_str = "POLICY SEARCH RESULTS:\n"
+        if results:
+            for r in results:
+                result_str += f"  [{r['id']}] {r['title']}: {r['content'][:120]}...\n"
+        else:
+            result_str += "  No matching policies found for query.\n"
+
+        # Store results for observation building
+        self._last_policy_results = results
+
+        return ImmigrationReward(
+            total=API_CALL_COST,
+            api_cost=API_CALL_COST,
+            breakdown={"policy_search": API_CALL_COST},
+            explanation=f"Policy searched. Cost: {API_CALL_COST}. Found {len(results)} results."
         ), result_str
 
     def _evaluate_decision(
@@ -394,7 +636,22 @@ class ImmigrationEnvironment:
                 api_bonus = 0.1  # rewarded for doing due diligence
                 explanation += " | +0.1 due-diligence bonus for querying APIs."
 
-        total = round(decision_reward + speed_bonus + api_bonus, 3)
+        # Bonus for correctly using policy search before edge-case decisions
+        policy_bonus = 0.0
+        if self._policies_used_this_passenger and act == gt:
+            edge_cases = ["escalate"]  # asylum, minors, forged docs
+            special = passenger.special_circumstances
+            is_edge = (gt in edge_cases or
+                       any(sc in special for sc in [
+                           "unaccompanied_minor", "asylum_claim", "emergency_travel_doc_holder",
+                           "diplomatic_passport_holder", "transit_passenger", "dual_nationality",
+                           "refugee_status_requested"
+                       ]))
+            if is_edge:
+                policy_bonus = POLICY_BONUS
+                explanation += f" | +{POLICY_BONUS} policy-lookup bonus for edge case."
+
+        total = round(decision_reward + speed_bonus + api_bonus + policy_bonus, 3)
 
         return ImmigrationReward(
             total=total,
@@ -404,9 +661,98 @@ class ImmigrationEnvironment:
                 "decision": decision_reward,
                 "speed_bonus": speed_bonus,
                 "api_diligence_bonus": api_bonus,
+                "policy_bonus": policy_bonus,
             },
             explanation=explanation
         )
+
+    # ─── Explainability ───────────────────────────────────────────────────────
+
+    def _build_explain_info(
+        self, action: ImmigrationAction,
+        passenger: PassengerProfile,
+        internal: _PassengerInternalData,
+        reward: ImmigrationReward
+    ) -> Dict[str, Any]:
+        """Build feature importance explanation for the last decision."""
+        # Compute feature importance based on what drove the ground truth
+        features = {}
+        key_factors = []
+
+        gt = internal.ground_truth_decision
+
+        # Check passport validity
+        passport_expired = any(
+            d.anomaly == "expired_passport" for d in passenger.documents
+        )
+        if passport_expired:
+            features["passport_validity"] = 0.45
+            key_factors.append("Passport is expired")
+        else:
+            features["passport_validity"] = 0.05
+
+        # Check visa match
+        visa_mismatch = any(
+            d.anomaly == "visa_purpose_mismatch" for d in passenger.documents
+        )
+        if visa_mismatch:
+            features["visa_purpose_match"] = 0.40
+            key_factors.append("Visa type does not match travel purpose")
+        else:
+            features["visa_purpose_match"] = 0.05
+
+        # Watchlist
+        if internal.watchlist_matched:
+            features["watchlist_score"] = 0.50
+            key_factors.append(f"Watchlist match: {internal.watchlist_reason}")
+        else:
+            features["watchlist_score"] = 0.02
+
+        # Biometrics
+        if not internal.is_authentic or internal.face_match_score < 0.70:
+            features["biometric_match"] = 0.45
+            if not internal.is_authentic:
+                key_factors.append("Document authenticity: FORGED")
+            if internal.face_match_score < 0.70:
+                key_factors.append(f"Face match score: {internal.face_match_score:.2f} (below threshold)")
+        else:
+            features["biometric_match"] = 0.03
+
+        # Special circumstances
+        if passenger.special_circumstances:
+            features["special_circumstances"] = 0.30
+            key_factors.append(f"Special: {', '.join(passenger.special_circumstances)}")
+        else:
+            features["special_circumstances"] = 0.01
+
+        # Travel history
+        non_compliant = [h for h in passenger.travel_history if not h.visa_compliant]
+        if non_compliant:
+            features["travel_history"] = 0.25
+            key_factors.append("Prior visa non-compliance detected")
+        else:
+            features["travel_history"] = 0.02
+
+        # Normalize to sum to 1.0
+        total_f = sum(features.values())
+        if total_f > 0:
+            features = {k: round(v / total_f, 3) for k, v in features.items()}
+
+        # Confidence
+        confidence = 0.95 if action.action_type == gt else 0.30
+
+        return {
+            "passenger_id": passenger.passenger_id,
+            "passenger_name": passenger.name,
+            "decision": action.action_type,
+            "ground_truth": gt,
+            "correct": action.action_type == gt,
+            "reward": round(reward.total, 3),
+            "feature_importance": features,
+            "key_factors": key_factors or ["Clean profile — no anomalies detected"],
+            "confidence": confidence,
+            "ground_truth_reason": internal.ground_truth_reason,
+        }
 
     # ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -419,6 +765,8 @@ class ImmigrationEnvironment:
             self._current_internal = None
         self._passenger_action_count = 0
         self._api_calls_used = []
+        self._policies_used_this_passenger = False
+        self._last_policy_results = None
 
     def _build_observation(self, processing_result: str = "") -> ImmigrationObservation:
         queue_summary = []
@@ -450,6 +798,8 @@ class ImmigrationEnvironment:
             secondary_screening_available=True,
             api_calls_used=list(self._api_calls_used),
             api_calls_remaining=max(0, API_CALL_MAX - len(self._api_calls_used)),
+            system_alerts=list(self._system_alerts),
+            queried_policies=getattr(self, '_last_policy_results', None),
         )
 
     def _profile_hash(self, internal: _PassengerInternalData) -> str:

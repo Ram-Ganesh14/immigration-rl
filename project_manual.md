@@ -8,7 +8,8 @@ This manual provides a detailed overview of the project structure, explaining th
 The core metadata configuration file mandated by the OpenEnv format. It defines:
 - **Observation Space**: What the agent sees (sanitised passenger profile and hidden data elements).
 - **Action Space**: Valid actions the agent can take, both terminal (`clear`, `deny`, etc.) and info-gathering (`query_interpol`, `verify_biometrics`).
-- **Tasks**: Defines the 4 tasks (`task1_document_check` through `task4_adversarial`), their difficulty, queue sizes, and max steps.
+- **Tasks**: Defines the 5 tasks (`task1_document_check` through `task5_system_disruption`), their difficulty, queue sizes, and max steps.
+- **RL Dynamics**: Documents the adversarial queue escalation and API reliability degradation mechanics.
 - **Endpoints & Docker settings**: Defines the REST API mapping and deployment configuration (e.g., port 7860).
 
 ### `inference.py`
@@ -54,16 +55,19 @@ Contains all the strongly typed Pydantic models used to represent the environmen
 ## The `/server` Directory
 This contains the core internal logic and API definition for the application.
 
-### `main.py`
+### `app.py`
 The FastAPI application entry point. 
-- Defines the REST API endpoints corresponding to the `openenv.yaml` (`/health`, `/reset`, `/step`, `/state`, `/grade`, `/tasks`).
+- Defines the REST API endpoints corresponding to the `openenv.yaml` (`/health`, `/reset`, `/step`, `/state`, `/grade`, `/tasks`, `/explain`, `/dashboard`).
 - Maintains an in-memory instance of the environment so concurrent testing or a single-threaded workflow can route API calls to the logic.
+- Serves the live monitoring dashboard from the `/dashboard` directory.
 
 ### `environment.py`
 The `ImmigrationEnvironment` class which serves as the "game master".
 - **`reset(task_id, seed)`**: Bootstraps a fresh queue of passengers.
 - **`step(action)`**: The primary game loop. Takes agent actions (e.g. `clear`, `query_interpol`), processes them, charges time/costs, reveals hidden datasets when appropriate, and updates the state.
 - **Internal State tracking**: Stores variables like API budget allocation and tracks demographic decisions (for bias analysis).
+- **RL Mechanic 1 — Adversarial Queue Escalation**: Tracks consecutive "sloppy clears" (terminal clear without any API query). After 3 consecutive sloppy clears, dynamically injects 2 high-risk passengers (watchlist hit + forged document) at the front of the queue.
+- **RL Mechanic 2 — API Reliability Degradation**: Tracks global API usage rate. When the rate exceeds 1.5 calls/passenger after 4+ passengers processed, APIs enter a degraded state: biometric face_match scores gain ±0.20 noise, and watchlist queries have a 15% chance of returning false positive fuzzy matches.
 
 ### `data_generator.py`
 A comprehensive mock data factory that programmatically creates passengers.
@@ -77,9 +81,10 @@ A comprehensive mock data factory that programmatically creates passengers.
 
 ### `graders.py`
 Contains the evaluation logic. Instead of standard pass/fail grading, the OpenEnv format encourages fractional scoring.
-- Implements targeted grading classes for Task 1 to 4 (`Task1Grader`, etc.)
+- Implements targeted grading classes for Task 1 to 5 (`grade_task1` through `grade_task5`).
 - Evaluates the actions taken in a completed episode against the expected "ground truth" behaviors of the `data_generator.py`.
-- **Task 4 Grader (Demographic Bias Tracking)**: Features custom logic measuring error rates segmented by generated passenger nationalities; if one nationality is systematically discriminated against for no factual reason, it penalises the agent significantly.
+- **Task 4 Grader (Intersectional Bias Tracking)**: Features custom logic measuring error rates segmented by nationality, gender, and intersectional groups (nationality × gender). Systematic discrimination triggers escalating penalties.
+- **Task 5 Grader (System Disruption)**: Evaluates the agent's ability to adapt under API outages and passenger surges, scoring adaptation behavior.
 
 ---
 
@@ -87,5 +92,6 @@ Contains the evaluation logic. Instead of standard pass/fail grading, the OpenEn
 
 ### `test_environment.py`
 Automated deterministic test specifications written for Python's `pytest` framework. 
-- Comprises 32 individual unit and integration tests.
-- Ensures features like "demographic bias punishment", "hidden APIs revealing data correctly", and "queue progression mechanics" function predictably before new commits break previous compatibility.
+- Comprises 64 individual unit and integration tests across 10 test classes.
+- Covers: lifecycle, hidden APIs, demographic bias, data generator, policy search, system disruption, new archetypes, intersectional bias, explainability, adversarial escalation (RL Mechanic 1), and API degradation (RL Mechanic 2).
+- Ensures features like "adversarial queue injection", "API noise degradation", "demographic bias punishment", "hidden APIs revealing data correctly", and "queue progression mechanics" function predictably before new commits break previous compatibility.

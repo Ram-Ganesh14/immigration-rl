@@ -13,6 +13,7 @@ class ActionType(str, Enum):
     REQUEST_DOCUMENT  = "request_document"
     QUERY_INTERPOL    = "query_interpol"
     VERIFY_BIOMETRICS = "verify_biometrics"
+    SEARCH_POLICY     = "search_policy"
 
 
 class DocumentType(str, Enum):
@@ -119,6 +120,8 @@ class ImmigrationObservation(BaseModel):
     fairness_score: float = 1.0
     api_calls_used: List[str] = []
     api_calls_remaining: int = 4
+    system_alerts: List[str] = []
+    queried_policies: Optional[List[Dict[str, Any]]] = None
 
 
 class ImmigrationAction(BaseModel):
@@ -127,6 +130,8 @@ class ImmigrationAction(BaseModel):
     passenger_id: str
     reason: str = ""
     document_requested: Optional[str] = None
+    policy_query: Optional[str] = None
+    summary_report: Optional[str] = None
 
 
 class ImmigrationReward(BaseModel):
@@ -159,6 +164,8 @@ class EpisodeState(BaseModel):
     done: bool = False
     fairness_tracker: Dict[str, List[str]] = {}
     demographic_log: List[Dict[str, Any]] = []
+    api_degraded: bool = False
+    adversarial_escalation_active: bool = False
 
 
 class StepResult(BaseModel):

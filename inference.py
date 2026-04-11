@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-inference.py — Baseline inference script.
-Uses the OpenAI client against all 4 tasks.
+inference.py — Baseline inference script for Airport Immigration Environment.
+Uses the OpenAI client against all 5 tasks with chain-of-thought reasoning.
 
 Environment variables:
   API_BASE_URL   LLM API endpoint
   MODEL_NAME     Model identifier
   HF_TOKEN       API key
   ENV_URL        Environment URL (default: http://localhost:7860)
+
+STDOUT FORMAT (mandatory):
+  [START] task=<task_name> env=airport-immigration model=<model_name>
+  [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
+  [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
 """
 
 import os, sys, json, time, argparse, requests
@@ -19,53 +24,92 @@ HF_TOKEN     = os.environ.get("HF_TOKEN", "")
 ENV_URL      = os.environ.get("ENV_URL", "http://localhost:7860")
 
 TASKS = ["task1_document_check", "task2_flag_detection",
-         "task3_queue_pressure", "task4_adversarial"]
+         "task3_queue_pressure", "task4_adversarial",
+         "task5_system_disruption"]
 MAX_STEPS_PER_TASK = 120
 SEED = 42
 
 client = OpenAI(api_key=HF_TOKEN or "sk-placeholder", base_url=API_BASE_URL)
 
-SYSTEM_PROMPT = """You are an AI airport immigration officer processing departing passengers.
+# ─── Chain-of-Thought System Prompt ──────────────────────────────────────────
+
+SYSTEM_PROMPT = """You are an AI airport immigration officer processing passengers.
+
+=== REASONING PROTOCOL ===
+Before making ANY decision, reason step-by-step:
+1. CHECK DOCUMENTS — Are passports valid? Any expired? Any anomalies?
+2. CHECK FLAGS — What system flags are raised? Should I query APIs?
+3. CHECK SPECIAL CIRCUMSTANCES — Is this a diplomat, transit, minor, asylum seeker?
+4. IF APIs QUERIED — What did INTERPOL/biometrics return? Any watchlist matches or forgery?
+5. IF POLICIES QUERIED — What immigration rules apply to this case?
+6. IF SYSTEM ALERTS — Is there an API outage? Should I use fallback procedures?
+7. MAKE DECISION — Based strictly on evidence. Never factor in nationality or gender.
 
 === AVAILABLE ACTIONS ===
 Terminal decisions (advance to next passenger):
-  clear     — All good, approve.
+  clear     — All good, approve entry.
   hold      — Suspicious but not certain — secondary screening.
   deny      — Clear violation (expired doc, visa mismatch, etc).
-  escalate  — Serious concern (watchlist, biometric fraud, unaccompanied minor, forged doc).
+  escalate  — Serious concern (watchlist, forgery, unaccompanied minor, asylum claim).
 
-Information-gathering actions (do NOT advance queue, cost a little time):
-  query_interpol    — Query the INTERPOL/national watchlist database for this passenger.
-  verify_biometrics — Run biometric verification (face match score, fingerprint, document authenticity).
+Information-gathering actions (do NOT advance queue, cost time):
+  query_interpol    — Query INTERPOL/national watchlist for this passenger.
+  verify_biometrics — Run biometric verification (face match, fingerprint, document authenticity).
+  search_policy     — Search the immigration policy knowledge base for rules (use policy_query field).
   request_document  — Ask passenger to present a specific document.
-
-=== WHEN TO USE API ACTIONS ===
-Call query_interpol when you see: "INTERPOL_QUERY_RECOMMENDED" flag, or the passenger name feels familiar/suspicious.
-Call verify_biometrics when you see: "BIOMETRIC_SCAN_RECOMMENDED", "DOCUMENT_INSPECTION_RECOMMENDED" flags, or anything seems off.
-You have a budget of 4 API calls per passenger. Use them wisely — they cost time.
 
 === DECISION RULES ===
 1. Expired passport → deny (unless emergency travel doc present → clear)
-2. Watchlist match score > 0.80 (from query_interpol) → escalate
-3. Face match score < 0.70 OR fingerprint fail (from verify_biometrics) → escalate
-4. Document not authentic (from verify_biometrics) → escalate
+2. Watchlist match score > 0.80 → escalate
+3. Face match < 0.70 OR fingerprint fail → escalate
+4. Document not authentic → escalate (forgery)
 5. Visa type ≠ travel purpose → deny
 6. Name mismatch between docs → hold
 7. Overstay history → hold
 8. Unaccompanied minor → escalate
-9. Clean profile, no flags → clear
+9. Diplomatic passport → clear (unless direct watchlist match > 0.90)
+10. Transit passenger with no destination visa → clear (transit exemption)
+11. Asylum seeker / refugee claim → escalate (international law — cannot deny)
+12. Dual nationality with expired 2nd passport → hold (verify via primary)
+13. API outage → fallback to document-only decisions (clear if no visible issues)
+14. Clean profile, no flags → clear
 
-=== FAIRNESS NOTE ===
-Your decisions are monitored for demographic bias. Do NOT factor nationality or gender into your
-decision — base every decision strictly on documents, biometrics, and flags.
+=== FAIRNESS WARNING ===
+Your decisions are audited for demographic bias. Do NOT factor nationality, ethnicity,
+or gender into decisions. Base every decision strictly on documents, biometrics, and flags.
+Systematic discrimination WILL be detected and penalized.
+
+=== WHEN TO USE search_policy ===
+Use search_policy when you encounter edge cases like: asylum seekers, diplomatic immunity,
+transit passengers, dual nationality, unaccompanied minors, or API outages.
+
+=== RL DYNAMICS — CRITICAL ===
+The environment adapts based on your behavior:
+1. SLOPPY CLEARING: If you clear 3+ passengers in a row WITHOUT querying any APIs,
+   the system will inject high-risk passengers (watchlist hits, forged documents) into your queue.
+   ALWAYS query at least one API per passenger when flags are present.
+2. API OVERUSE: If you query APIs too heavily (rate ≥ 1.5 per passenger after 4+ processed),
+   the APIs will DEGRADE — biometric scores become noisy (±0.20) and watchlist queries
+   may return false positives. Use APIs SELECTIVELY, not on every passenger.
+3. OPTIMAL STRATEGY: Query APIs on flagged passengers. Skip APIs on clean, low-risk profiles.
+   This balance is what the environment rewards.
 
 === OUTPUT FORMAT ===
-Respond ONLY with valid JSON, no markdown:
+Respond ONLY with valid JSON, no markdown, no explanation outside JSON:
 {
-  "action_type": "clear|hold|deny|escalate|query_interpol|verify_biometrics|request_document",
+  "action_type": "clear|hold|deny|escalate|query_interpol|verify_biometrics|search_policy|request_document",
   "passenger_id": "<id>",
   "reason": "<max 20 words>",
-  "document_requested": null
+  "document_requested": null,
+  "policy_query": null
+}
+
+For search_policy, set policy_query to your search terms, e.g.:
+{
+  "action_type": "search_policy",
+  "passenger_id": "<id>",
+  "reason": "Need to check asylum rules",
+  "policy_query": "asylum refugee seeker rights border"
 }"""
 
 
@@ -101,6 +145,18 @@ def call_llm(obs: dict) -> dict:
         if wl_result else "  NOT QUERIED YET"
     )
 
+    # Policy search results
+    pol_results = obs.get("queried_policies")
+    pol_str = ""
+    if pol_results:
+        pol_str = "\nPOLICY SEARCH RESULTS:\n"
+        for p in pol_results:
+            pol_str += f"  [{p['id']}] {p['title']}: {p['content'][:100]}...\n"
+
+    # System alerts
+    alerts = obs.get("system_alerts", [])
+    alert_str = "\n".join(f"  ⚠ {a}" for a in alerts) if alerts else "  None"
+
     prompt = f"""PASSENGER TO PROCESS:
 ID: {passenger['passenger_id']}
 Name: {passenger['name']}
@@ -121,13 +177,15 @@ BIOMETRIC CHECK RESULT:
 
 INTERPOL/WATCHLIST RESULT:
 {wl_str}
-
+{pol_str}
 SYSTEM FLAGS: {', '.join(obs.get('auto_flags', [])) or 'None'}
+SYSTEM ALERTS:
+{alert_str}
 API calls used: {obs.get('api_calls_used', [])} | Remaining budget: {obs.get('api_calls_remaining', 4)}
 Queue: {obs.get('queue_length', 0)} remaining | Time left: {obs.get('time_remaining', 0)}s
 Last result: {obs.get('processing_result', '')}
 
-What is your action?"""
+Reason step-by-step, then give your JSON action."""
 
     try:
         resp = client.chat.completions.create(
@@ -137,14 +195,28 @@ What is your action?"""
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            max_tokens=200,
+            max_tokens=300,
         )
         raw = resp.choices[0].message.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        return json.loads(raw.strip())
+        # Extract JSON from potential markdown or CoT wrapper
+        if "```" in raw:
+            parts = raw.split("```")
+            for part in parts:
+                part = part.strip()
+                if part.startswith("json"):
+                    part = part[4:]
+                part = part.strip()
+                if part.startswith("{"):
+                    return json.loads(part)
+        # Try to find JSON object at end of text (after reasoning)
+        if raw.startswith("{"):
+            return json.loads(raw)
+        # Search for last JSON block
+        start_idx = raw.rfind("{")
+        end_idx = raw.rfind("}") + 1
+        if start_idx >= 0 and end_idx > start_idx:
+            return json.loads(raw[start_idx:end_idx])
+        return json.loads(raw)
     except json.JSONDecodeError:
         return {"action_type": "hold", "passenger_id": passenger["passenger_id"],
                 "reason": "Parse error — defaulting to hold.", "document_requested": None}
@@ -170,8 +242,8 @@ def run_task(task_id: str, seed: int = SEED) -> dict:
 
     result = env_req("POST", "/reset", {"task_id": task_id, "seed": seed})
     obs = result["observation"]
-    print(f"  Episode: {result['episode_id']} | Passengers: "
-          f"{obs.get('queue_length', 0) + (1 if obs.get('current_passenger') else 0)}")
+    total_p = obs.get('queue_length', 0) + (1 if obs.get('current_passenger') else 0)
+    print(f"  Episode: {result['episode_id']} | Passengers: {total_p}")
 
     print(f"[START] task={task_id} env=airport-immigration model={MODEL_NAME}", flush=True)
     step, done, cum_reward = 0, False, 0.0
@@ -186,6 +258,12 @@ def run_task(task_id: str, seed: int = SEED) -> dict:
         flags = obs.get("auto_flags", [])
         api_used = obs.get("api_calls_used", [])
 
+        # Show system alerts if any
+        sys_alerts = obs.get("system_alerts", [])
+        if sys_alerts:
+            for alert in sys_alerts:
+                print(f"  ⚠ SYSTEM: {alert}")
+
         print(f"\n  Step {step+1} | {p['name']} ({p['nationality']}) | Flags: {flags}")
         if api_used:
             print(f"    APIs called: {api_used}")
@@ -194,8 +272,9 @@ def run_task(task_id: str, seed: int = SEED) -> dict:
         if action is None:
             break
 
-        print(f"    → {action['action_type'].upper()} | {action['reason']}")
-        
+        action_str = action.get('action_type', 'unknown').upper()
+        print(f"    → {action_str} | {action.get('reason', '')}")
+
         step_result = env_req("POST", "/step", {"action": action})
         obs = step_result["observation"]
         reward_dict = step_result["reward"]
@@ -203,8 +282,10 @@ def run_task(task_id: str, seed: int = SEED) -> dict:
         done = step_result["done"]
         cum_reward += reward_val
         all_rewards.append(reward_val)
-        
-        print(f"[STEP] step={step+1} action={json.dumps(action)} reward={reward_val:.2f} done={str(done).lower()} error=null", flush=True)
+
+        error_str = "null"
+        action_json = json.dumps(action)
+        print(f"[STEP] step={step+1} action={action_json} reward={reward_val:.2f} done={str(done).lower()} error={error_str}", flush=True)
         print(f"    Reward: {reward_val:+.3f} | {reward_dict['explanation'][:70]}")
         step += 1
         time.sleep(0.25)
@@ -213,8 +294,8 @@ def run_task(task_id: str, seed: int = SEED) -> dict:
     score_val = grade['score']
     success_val = str(score_val >= 0.5).lower()
     rewards_str = ",".join(f"{r:.2f}" for r in all_rewards)
-    print(f"[END] success={success_val} steps={step} score={score_val:.3f} rewards={rewards_str}", flush=True)
-    
+    print(f"[END] success={success_val} steps={step} score={score_val:.2f} rewards={rewards_str}", flush=True)
+
     print(f"\n  ── Grade ────────────────────────────────────────────")
     print(f"  Score: {score_val:.4f}/1.0000")
     print(f"  {grade.get('explanation', '')}")

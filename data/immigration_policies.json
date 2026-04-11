@@ -1,0 +1,92 @@
+[
+  {
+    "id": "POL-001",
+    "title": "Emergency Travel Document Override",
+    "content": "A valid Emergency Travel Document (ETD) issued by the passenger's home country overrides an expired passport for a single journey. The ETD must have been issued within 30 days and must not itself be expired. If both passport and ETD are expired, deny entry.",
+    "tags": ["emergency", "expired_passport", "ETD", "override", "travel_document"]
+  },
+  {
+    "id": "POL-002",
+    "title": "Unaccompanied Minor Protocol",
+    "content": "Passengers under 16 years of age travelling without a parent or legal guardian must be escalated to a senior immigration officer. A notarized guardian consent form is required for minors travelling with non-parent adults. Do not deny entry to unaccompanied minors — child protection protocols apply.",
+    "tags": ["minor", "unaccompanied", "child_protection", "escalate", "guardian"]
+  },
+  {
+    "id": "POL-003",
+    "title": "Transit Passenger Visa Exemption",
+    "content": "Passengers transiting through the airport who will not leave the international transit zone do not require a destination country visa. They need only a valid passport and a confirmed boarding pass for their connecting flight. Transit passengers should be cleared unless other security flags exist.",
+    "tags": ["transit", "visa_exemption", "connection", "international_zone", "boarding_pass"]
+  },
+  {
+    "id": "POL-004",
+    "title": "Diplomatic Passport Privileges",
+    "content": "Holders of diplomatic passports issued by recognized sovereign states are exempt from standard visa requirements under the Vienna Convention on Diplomatic Relations. They should be cleared for entry unless there is a direct and confirmed INTERPOL watchlist match with high confidence (score > 0.90).",
+    "tags": ["diplomatic", "immunity", "visa_exempt", "vienna_convention", "sovereign"]
+  },
+  {
+    "id": "POL-005",
+    "title": "Asylum Seeker Rights at Border",
+    "content": "Under the 1951 Refugee Convention, a passenger claiming asylum or refugee status at the border cannot be summarily denied entry. They must be escalated to a senior immigration officer for formal asylum processing. Denying entry to an asylum claimant violates international law.",
+    "tags": ["asylum", "refugee", "international_law", "convention", "escalate", "protection"]
+  },
+  {
+    "id": "POL-006",
+    "title": "Dual Nationality Document Verification",
+    "content": "Passengers holding dual nationality may present two passports. Both passports must be verified for validity. If only one passport is expired, the passenger should be held for secondary screening to verify identity with the valid passport. If both are valid, clear the passenger.",
+    "tags": ["dual_nationality", "two_passports", "identity", "verification", "secondary"]
+  },
+  {
+    "id": "POL-007",
+    "title": "Visa Purpose Mismatch Policy",
+    "content": "If the passenger's stated travel purpose does not match their visa type (e.g., tourist visa but travelling for work), entry must be denied. Common mismatches: tourist visa + business/work purpose, student visa + employment purpose, transit visa + intent to stay.",
+    "tags": ["visa", "purpose", "mismatch", "deny", "work", "tourist", "student"]
+  },
+  {
+    "id": "POL-008",
+    "title": "Overstay History Assessment",
+    "content": "Passengers with a prior overstay record in any country should be held for secondary screening. A single overstay of less than 30 days may be excused with documented reason. Repeated overstays or overstays exceeding 90 days warrant escalation to senior officer.",
+    "tags": ["overstay", "history", "secondary", "hold", "repeat", "duration"]
+  },
+  {
+    "id": "POL-009",
+    "title": "INTERPOL Watchlist Match Protocol",
+    "content": "If an INTERPOL watchlist query returns a match with confidence score above 0.80, the passenger must be escalated to a senior officer immediately. Scores between 0.60-0.80 warrant holding for secondary screening. Scores below 0.60 are considered false positives and should not affect the decision.",
+    "tags": ["interpol", "watchlist", "match", "escalate", "confidence", "threshold"]
+  },
+  {
+    "id": "POL-010",
+    "title": "Biometric Verification Failure Protocol",
+    "content": "If biometric verification returns a face match score below 0.70 OR fingerprint match failure OR document authenticity failure, the passenger must be escalated for fraud investigation. A face match score between 0.70-0.85 with passing fingerprint is acceptable but warrants secondary screening.",
+    "tags": ["biometric", "face_match", "fingerprint", "forgery", "fraud", "authenticity"]
+  },
+  {
+    "id": "POL-011",
+    "title": "Expired Passport — No Override Available",
+    "content": "A passenger presenting an expired passport without a valid Emergency Travel Document (ETD) or diplomatic immunity must be denied boarding. There is no exception to this rule for standard passport holders.",
+    "tags": ["expired", "passport", "deny", "no_exception", "standard"]
+  },
+  {
+    "id": "POL-012",
+    "title": "Name Discrepancy Between Documents",
+    "content": "If the name on any presented document (passport, visa, boarding pass) does not match the others, the passenger should be held for secondary screening. Minor spelling variations (e.g., transliteration differences) may be acceptable. Completely different names warrant escalation.",
+    "tags": ["name", "mismatch", "discrepancy", "documents", "hold", "spelling"]
+  },
+  {
+    "id": "POL-013",
+    "title": "Health and Quarantine Requirements",
+    "content": "Passengers arriving from regions with active health advisories may require proof of vaccination or negative test results. If health documentation is missing, hold for secondary screening. Do not deny entry solely based on origin country without checking health documents.",
+    "tags": ["health", "quarantine", "vaccination", "test", "advisory", "medical"]
+  },
+  {
+    "id": "POL-014",
+    "title": "Non-Discrimination and Fairness Policy",
+    "content": "Immigration decisions must be based solely on documentary evidence, security data, and legitimate risk factors. Decisions must not be influenced by passenger nationality, ethnicity, gender, religion, or appearance. Officers found to systematically discriminate will face review and penalty.",
+    "tags": ["fairness", "discrimination", "bias", "nationality", "gender", "ethnicity"]
+  },
+  {
+    "id": "POL-015",
+    "title": "API Outage Fallback Procedure",
+    "content": "If the INTERPOL watchlist or biometric verification systems are temporarily offline, officers must rely on manual document inspection. During API outages, passengers with no visible document issues and no system flags should be cleared. Passengers with visible anomalies should be held until systems are restored.",
+    "tags": ["outage", "offline", "fallback", "manual", "system_failure", "API"]
+  }
+]
