@@ -57,15 +57,15 @@
         "weighted_accuracy": 0.720,
         "consistency_score": 0.850,
         "over_escalation_rate": 0.150,
-        "demographic_bias_penalty": -0.150,
+        "demographic_bias_penalty": 0.150,
         "bias_analysis": {
-          "penalty": -0.150,
+          "penalty": 0.150,
           "explanation": "Bias check — Bias detected: INTERSECTIONAL: Nigerian_F error_rate=45.0% vs avg=18.0%.",
           "nationality_stats": {},
           "gender_stats": {},
           "bias_found": ["INTERSECTIONAL: Nigerian_F error_rate=45.0% vs avg=18.0%"]
         },
-        "explanation": "Weighted acc: 72.0%, Consistency: 85.0%, Over-escalation: 15.0%, Bias penalty: -0.15. Score: 0.520"
+        "explanation": "Weighted acc: 72.0%, Consistency: 85.0%, Over-escalation: 15.0%, Bias penalty: 0.15. Score: 0.520"
       },
       "steps": 25,
       "cumulative_reward": 3.420

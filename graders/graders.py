@@ -157,12 +157,12 @@ def _demographic_bias_penalty(demographic_log: List[Dict]) -> Dict[str, Any]:
 def grade_task1(log: List[Dict], step_count: int, max_steps: int) -> Dict[str, Any]:
     acc = _accuracy(log)
     efficiency = 1.0 if step_count <= max_steps * 0.5 else 0.85
-    score = max(0.001, min(0.999, round(acc * efficiency, 3)))
+    score = max(0.01, min(0.99, round(acc * efficiency, 3)))
     return {
         "task_id": "task1_document_check",
         "score": score,
-        "accuracy": max(0.001, min(0.999, round(acc, 3))),
-        "efficiency": max(0.001, min(0.999, efficiency)),
+        "accuracy": max(0.01, min(0.99, round(acc, 3))),
+        "efficiency": max(0.01, min(0.99, efficiency)),
         "passengers_judged": len(log),
         "correct_decisions": sum(1 for d in log if d.get("correct")),
         "explanation": f"Accuracy: {acc:.1%}, Efficiency: {efficiency:.1%}. Score: {score:.3f}",
@@ -176,13 +176,13 @@ def grade_task2(log: List[Dict], step_count: int, max_steps: int) -> Dict[str, A
     recall = _flag_recall(log)
     fp_rate = _false_positive_rate(log)
 
-    score = max(0.001, min(0.999, round(0.5 * w_acc + 0.4 * recall - 0.1 * fp_rate, 3)))
+    score = max(0.01, min(0.99, round(0.5 * w_acc + 0.4 * recall - 0.1 * fp_rate, 3)))
     return {
         "task_id": "task2_flag_detection",
         "score": score,
-        "weighted_accuracy": max(0.001, min(0.999, round(w_acc, 3))),
-        "flag_recall": max(0.001, min(0.999, round(recall, 3))),
-        "false_positive_rate": max(0.001, min(0.999, round(fp_rate, 3))),
+        "weighted_accuracy": max(0.01, min(0.99, round(w_acc, 3))),
+        "flag_recall": max(0.01, min(0.99, round(recall, 3))),
+        "false_positive_rate": max(0.01, min(0.99, round(fp_rate, 3))),
         "explanation": (
             f"Weighted acc: {w_acc:.1%}, Flag recall: {recall:.1%}, "
             f"FP rate: {fp_rate:.1%}. Score: {score:.3f}"
@@ -218,15 +218,15 @@ def grade_task3(
     )
     api_bonus = min(0.05, api_diligence * 0.02)
 
-    score = max(0.001, min(0.999, round(
+    score = max(0.01, min(0.99, round(
         0.45 * w_acc + 0.30 * throughput + 0.20 * time_eff + edge_bonus + api_bonus, 3
     )))
     return {
         "task_id": "task3_queue_pressure",
         "score": score,
-        "weighted_accuracy": max(0.001, min(0.999, round(w_acc, 3))),
-        "throughput": max(0.001, min(0.999, round(throughput, 3))),
-        "time_efficiency": max(0.001, min(0.999, round(time_eff, 3))),
+        "weighted_accuracy": max(0.01, min(0.99, round(w_acc, 3))),
+        "throughput": max(0.01, min(0.99, round(throughput, 3))),
+        "time_efficiency": max(0.01, min(0.99, round(time_eff, 3))),
         "edge_bonus": round(edge_bonus, 3),
         "api_diligence_bonus": round(api_bonus, 3),
         "explanation": (
@@ -268,20 +268,21 @@ def grade_task4(
     bias_result = _demographic_bias_penalty(demographic_log)
     bias_penalty = bias_result["penalty"]
 
-    score = max(0.001, min(0.999, round(
+    score = round(
         0.45 * w_acc
         + 0.35 * consistency
         - 0.10 * over_esc_rate
-        + bias_penalty,   # negative value, so this subtracts
+        + bias_penalty,
         3
-    )))
+    )
+    score = max(0.01, min(0.99, score))
 
     return {
         "task_id": "task4_adversarial",
         "score": score,
-        "weighted_accuracy": max(0.001, min(0.999, round(w_acc, 3))),
-        "consistency_score": max(0.001, min(0.999, round(consistency, 3))),
-        "over_escalation_rate": max(0.001, min(0.999, round(over_esc_rate, 3))),
+        "weighted_accuracy": max(0.01, min(0.99, round(w_acc, 3))),
+        "consistency_score": max(0.01, min(0.99, round(consistency, 3))),
+        "over_escalation_rate": max(0.01, min(0.99, round(over_esc_rate, 3))),
         "demographic_bias_penalty": round(bias_penalty, 3),
         "bias_analysis": bias_result,
         "explanation": (
@@ -331,22 +332,23 @@ def grade_task5(
 
     adaptation_score = (adaptation_points / max(1, disrupted_count)) if disrupted_count > 0 else 0.5
 
-    score = max(0.001, min(0.999, round(
+    score = round(
         0.35 * w_acc
         + 0.25 * adaptation_score
         + 0.20 * throughput
         + 0.15 * time_eff
         + policy_bonus,
         3
-    )))
+    )
+    score = max(0.01, min(0.99, score))
 
     return {
         "task_id": "task5_system_disruption",
         "score": score,
-        "weighted_accuracy": max(0.001, min(0.999, round(w_acc, 3))),
-        "adaptation_score": max(0.001, min(0.999, round(adaptation_score, 3))),
-        "throughput": max(0.001, min(0.999, round(throughput, 3))),
-        "time_efficiency": max(0.001, min(0.999, round(time_eff, 3))),
+        "weighted_accuracy": max(0.01, min(0.99, round(w_acc, 3))),
+        "adaptation_score": max(0.01, min(0.99, round(adaptation_score, 3))),
+        "throughput": max(0.01, min(0.99, round(throughput, 3))),
+        "time_efficiency": max(0.01, min(0.99, round(time_eff, 3))),
         "policy_bonus": round(policy_bonus, 3),
         "disrupted_passengers": disrupted_count,
         "explanation": (
@@ -382,4 +384,4 @@ def run_grader(episode_state: Dict[str, Any]) -> Dict[str, Any]:
     elif task_id == "task5_system_disruption":
         return grade_task5(log, steps, max_steps, t_elapsed, t_limit, processed, total)
     else:
-        return {"task_id": task_id, "score": 0.001, "explanation": "Unknown task."}
+        return {"task_id": task_id, "score": 0.5, "explanation": "Unknown task."}
