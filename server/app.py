@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from pydantic import BaseModel
 from typing import Optional
 import uvicorn
@@ -161,22 +161,8 @@ def dashboard():
 
 @app.get("/")
 def root():
-    return {
-        "name": "Airport Immigration Processing Environment",
-        "openenv": True,
-        "version": "2.0.0",
-        "tasks": VALID_TASKS,
-        "features": [
-            "Hidden information APIs (INTERPOL, biometrics)",
-            "Policy knowledge base (RAG search)",
-            "Demographic fairness tracking (nationality + gender + intersectional)",
-            "System disruption simulation (API outages, passenger surges)",
-            "Decision explainability",
-            "Live monitoring dashboard",
-        ],
-        "endpoints": ["/reset", "/step", "/state", "/grade", "/tasks", "/health", "/explain", "/dashboard"],
-        "docs": "/docs",
-    }
+    """Redirect to dashboard for a better user experience on the landing page."""
+    return RedirectResponse(url="/dashboard")
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
