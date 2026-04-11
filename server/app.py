@@ -161,8 +161,22 @@ def dashboard():
 
 @app.get("/")
 def root():
-    """Redirect to dashboard for a better user experience on the landing page."""
-    return RedirectResponse(url="/dashboard")
+    return {
+        "name": "Airport Immigration Processing Environment",
+        "openenv": True,
+        "version": "2.0.0",
+        "tasks": VALID_TASKS,
+        "features": [
+            "Hidden information APIs (INTERPOL, biometrics)",
+            "Policy knowledge base (RAG search)",
+            "Demographic fairness tracking (nationality + gender + intersectional)",
+            "System disruption simulation (API outages, passenger surges)",
+            "Decision explainability",
+            "Live monitoring dashboard",
+        ],
+        "endpoints": ["/reset", "/step", "/state", "/grade", "/tasks", "/health", "/explain", "/dashboard"],
+        "docs": "/docs",
+    }
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────

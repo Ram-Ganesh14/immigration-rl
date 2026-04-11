@@ -161,8 +161,8 @@ def grade_task1(log: List[Dict], step_count: int, max_steps: int) -> Dict[str, A
     return {
         "task_id": "task1_document_check",
         "score": score,
-        "accuracy": round(acc, 3),
-        "efficiency": efficiency,
+        "accuracy": max(0.001, min(0.999, round(acc, 3))),
+        "efficiency": max(0.001, min(0.999, efficiency)),
         "passengers_judged": len(log),
         "correct_decisions": sum(1 for d in log if d.get("correct")),
         "explanation": f"Accuracy: {acc:.1%}, Efficiency: {efficiency:.1%}. Score: {score:.3f}",
@@ -180,9 +180,9 @@ def grade_task2(log: List[Dict], step_count: int, max_steps: int) -> Dict[str, A
     return {
         "task_id": "task2_flag_detection",
         "score": score,
-        "weighted_accuracy": round(w_acc, 3),
-        "flag_recall": round(recall, 3),
-        "false_positive_rate": round(fp_rate, 3),
+        "weighted_accuracy": max(0.001, min(0.999, round(w_acc, 3))),
+        "flag_recall": max(0.001, min(0.999, round(recall, 3))),
+        "false_positive_rate": max(0.001, min(0.999, round(fp_rate, 3))),
         "explanation": (
             f"Weighted acc: {w_acc:.1%}, Flag recall: {recall:.1%}, "
             f"FP rate: {fp_rate:.1%}. Score: {score:.3f}"
@@ -224,11 +224,11 @@ def grade_task3(
     return {
         "task_id": "task3_queue_pressure",
         "score": score,
-        "weighted_accuracy": round(w_acc, 3),
-        "throughput": round(throughput, 3),
-        "time_efficiency": round(time_eff, 3),
-        "edge_bonus": edge_bonus,
-        "api_diligence_bonus": api_bonus,
+        "weighted_accuracy": max(0.001, min(0.999, round(w_acc, 3))),
+        "throughput": max(0.001, min(0.999, round(throughput, 3))),
+        "time_efficiency": max(0.001, min(0.999, round(time_eff, 3))),
+        "edge_bonus": round(edge_bonus, 3),
+        "api_diligence_bonus": round(api_bonus, 3),
         "explanation": (
             f"Weighted acc: {w_acc:.1%}, Throughput: {throughput:.1%}, "
             f"Time eff: {time_eff:.1%}. Score: {score:.3f}"
@@ -279,10 +279,10 @@ def grade_task4(
     return {
         "task_id": "task4_adversarial",
         "score": score,
-        "weighted_accuracy": round(w_acc, 3),
-        "consistency_score": round(consistency, 3),
-        "over_escalation_rate": round(over_esc_rate, 3),
-        "demographic_bias_penalty": bias_penalty,
+        "weighted_accuracy": max(0.001, min(0.999, round(w_acc, 3))),
+        "consistency_score": max(0.001, min(0.999, round(consistency, 3))),
+        "over_escalation_rate": max(0.001, min(0.999, round(over_esc_rate, 3))),
+        "demographic_bias_penalty": round(bias_penalty, 3),
         "bias_analysis": bias_result,
         "explanation": (
             f"Weighted acc: {w_acc:.1%}, Consistency: {consistency:.1%}, "
@@ -343,11 +343,11 @@ def grade_task5(
     return {
         "task_id": "task5_system_disruption",
         "score": score,
-        "weighted_accuracy": round(w_acc, 3),
-        "adaptation_score": round(adaptation_score, 3),
-        "throughput": round(throughput, 3),
-        "time_efficiency": round(time_eff, 3),
-        "policy_bonus": policy_bonus,
+        "weighted_accuracy": max(0.001, min(0.999, round(w_acc, 3))),
+        "adaptation_score": max(0.001, min(0.999, round(adaptation_score, 3))),
+        "throughput": max(0.001, min(0.999, round(throughput, 3))),
+        "time_efficiency": max(0.001, min(0.999, round(time_eff, 3))),
+        "policy_bonus": round(policy_bonus, 3),
         "disrupted_passengers": disrupted_count,
         "explanation": (
             f"Weighted acc: {w_acc:.1%}, Adaptation: {adaptation_score:.1%}, "
