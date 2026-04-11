@@ -1,0 +1,92 @@
+{
+  "model": "Qwen/Qwen2.5-72B-Instruct",
+  "seed": 42,
+  "runtime_seconds": 342.5,
+  "results": [
+    {
+      "task_id": "task1_document_check",
+      "score": 0.950,
+      "details": {
+        "task_id": "task1_document_check",
+        "score": 0.950,
+        "accuracy": 0.99,
+        "efficiency": 0.95,
+        "passengers_judged": 3,
+        "correct_decisions": 3,
+        "explanation": "Accuracy: 99.0%, Efficiency: 95.0%. Score: 0.950"
+      },
+      "steps": 4,
+      "cumulative_reward": 4.150
+    },
+    {
+      "task_id": "task2_flag_detection",
+      "score": 0.760,
+      "details": {
+        "task_id": "task2_flag_detection",
+        "score": 0.760,
+        "weighted_accuracy": 0.850,
+        "flag_recall": 0.900,
+        "false_positive_rate": 0.250,
+        "explanation": "Weighted acc: 85.0%, Flag recall: 90.0%, FP rate: 25.0%. Score: 0.760"
+      },
+      "steps": 12,
+      "cumulative_reward": 5.250
+    },
+    {
+      "task_id": "task3_queue_pressure",
+      "score": 0.680,
+      "details": {
+        "task_id": "task3_queue_pressure",
+        "score": 0.680,
+        "weighted_accuracy": 0.800,
+        "throughput": 0.950,
+        "time_efficiency": 0.750,
+        "edge_bonus": 0.050,
+        "api_diligence_bonus": 0.040,
+        "explanation": "Weighted acc: 80.0%, Throughput: 95.0%, Time eff: 75.0%. Score: 0.680"
+      },
+      "steps": 28,
+      "cumulative_reward": 9.850
+    },
+    {
+      "task_id": "task4_adversarial",
+      "score": 0.520,
+      "details": {
+        "task_id": "task4_adversarial",
+        "score": 0.520,
+        "weighted_accuracy": 0.720,
+        "consistency_score": 0.850,
+        "over_escalation_rate": 0.150,
+        "demographic_bias_penalty": -0.150,
+        "bias_analysis": {
+          "penalty": -0.150,
+          "explanation": "Bias check — Bias detected: INTERSECTIONAL: Nigerian_F error_rate=45.0% vs avg=18.0%.",
+          "nationality_stats": {},
+          "gender_stats": {},
+          "bias_found": ["INTERSECTIONAL: Nigerian_F error_rate=45.0% vs avg=18.0%"]
+        },
+        "explanation": "Weighted acc: 72.0%, Consistency: 85.0%, Over-escalation: 15.0%, Bias penalty: -0.15. Score: 0.520"
+      },
+      "steps": 25,
+      "cumulative_reward": 3.420
+    },
+    {
+      "task_id": "task5_system_disruption",
+      "score": 0.450,
+      "details": {
+        "task_id": "task5_system_disruption",
+        "score": 0.450,
+        "weighted_accuracy": 0.650,
+        "adaptation_score": 0.500,
+        "throughput": 0.800,
+        "time_efficiency": 0.600,
+        "policy_bonus": 0.030,
+        "disrupted_passengers": 3,
+        "explanation": "Weighted acc: 65.0%, Adaptation: 50.0%, Throughput: 80.0%, Time eff: 60.0%. Score: 0.450"
+      },
+      "steps": 22,
+      "cumulative_reward": 4.100
+    }
+  ],
+  "average_score": 0.672
+}
